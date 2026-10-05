@@ -33,6 +33,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   - *Edges*: whitening/chipping along each edge
   - *Corners*: wear and dings (compared with the card's die-cut corner shape)
   - *Surface*: creases (long, straight, thin lines on the back), spots/stains in the borders, glare
+  Holo foil, glossy finishes and glare are told apart from wear: whitening must be a sharp
+  step confined to the outer ~1 mm (reflections fade in gradually), everything is compared with
+  the border colour at that spot, single-pixel foil glints are ignored, and only marks darker than
+  the border count as dirt (reflections are always brighter). Detected shine is reported as info,
+  not counted against the grade.
   The report shows what was measured on the straightened photos and, if you link a card from your
   collection, its value at the estimated grade. (`public/grader.js`; runs entirely in the browser.)
 - Works on phones, tablets and desktops: on large screens you get a sidebar, a dashboard layout,

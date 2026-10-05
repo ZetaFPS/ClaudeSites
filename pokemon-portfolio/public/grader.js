@@ -206,82 +206,142 @@
     return { left: side('left'), right: side('right'), top: side('top'), bottom: side('bottom') };
   }
 
-  function borderRef(px, name, mmFrom = 1.2, mmTo = 1.8) {
-    const cols = [];
-    for (let i = 0; i < 30; i++) {
-      const f = 0.2 + 0.6 * i / 29;
-      for (let m = Math.round(mmFrom * MM); m <= Math.round(mmTo * MM); m += 2) {
-        if (name === 'left') cols.push(P(px, m, Math.round(CH * f)));
-        else if (name === 'right') cols.push(P(px, CW - 1 - m, Math.round(CH * f)));
-        else if (name === 'top') cols.push(P(px, Math.round(CW * f), m));
-        else cols.push(P(px, Math.round(CW * f), CH - 1 - m));
-      }
+  /* Telling wear apart from light.
+   *
+   * Holo foil, glossy finishes and room lighting put bright, washed-out patches on a card —
+   * which look a lot like whitening. Two things separate them:
+   *   1. Depth profile. Whitening / chipping is a sharp step: bright in the outer ~1 mm and the
+   *      normal border colour just inside it. A reflection fades in gradually, so the border just
+   *      inside is brightened too.
+   *   2. Local reference. Everything is compared with the border colour *at that spot* (a
+   *      sliding median along the edge), so a broad glare or a foil gradient across a whole side
+   *      doesn't make every pixel look worn.
+   * Single-pixel foil glints are ignored by only counting wear that forms runs along the edge.
+   */
+  const SIDES = ['left', 'right', 'top', 'bottom'];
+  const sideLen = (name) => (name === 'left' || name === 'right' ? CH : CW);
+  // (depth from the edge in px, position along the edge in px) → (x, y)
+  const at = (name, m, t) => (name === 'left' ? [m, t] : name === 'right' ? [CW - 1 - m, t] : name === 'top' ? [t, m] : [t, CH - 1 - m]);
+
+  // Border colour at every position along a side, measured at depth [d0, d1] (px) and smoothed
+  // with a sliding median over ±win px.
+  function localRefs(px, name, d0, d1, win = 25) {
+    const len = sideLen(name);
+    const col = new Array(len);
+    for (let t = 0; t < len; t++) {
+      const cs = [];
+      for (let m = d0; m <= d1; m += 2) cs.push(P(px, ...at(name, m, t)));
+      col[t] = medColor(cs);
     }
-    return medColor(cols);
+    const refs = new Array(len);
+    for (let t = 0; t < len; t++) {
+      const cs = [];
+      for (let u = Math.max(0, t - win); u <= Math.min(len - 1, t + win); u += 3) cs.push(col[u]);
+      refs[t] = medColor(cs);
+    }
+    return refs;
   }
 
-  // Light, desaturated pixels where the border colour should be = edge wear.
-  function isWhitening(p, ref) {
+  // Brighter and (for coloured borders) paler than the border = candidate whitening.
+  function brighterPaler(p, ref) {
     const dl = lumOf(...p) - lumOf(...ref);
     const sRef = satOf(...ref), sP = satOf(...p);
     if (sRef > 0.25) return dl > 30 && sP < sRef * 0.6;
-    return dl > 48 && lumOf(...p) > 170; // silver/grey/white borders: only clearly brighter counts
+    return dl > 45 && lumOf(...p) > 170; // silver/grey/white borders: only clearly brighter counts
+  }
+  const excess = (p, ref) => lumOf(...p) - lumOf(...ref);
+
+  // Is the edge at position t worn (sharp bright step) or just lit (gradual)?
+  // Returns { worn, shine } for this position.
+  function edgeProfile(px, name, t, ref) {
+    let e0 = 0, n0 = 0, hits = 0;
+    for (let m = 2; m <= 7; m++) { // 0.2–0.7 mm: where chipping shows
+      const p = P(px, ...at(name, m, t));
+      e0 += excess(p, ref); n0++;
+      if (brighterPaler(p, ref)) hits++;
+    }
+    e0 /= n0;
+    let e1 = 0, n1 = 0;
+    for (let m = 11; m <= 15; m++) { e1 += excess(P(px, ...at(name, m, t)), ref); n1++; } // 1.1–1.5 mm
+    e1 /= n1;
+    if (hits < 2 || e0 < 25) return { worn: false, shine: false };
+    const sharp = e1 < 0.4 * e0; // drops back to the border colour almost immediately
+    return { worn: sharp, shine: !sharp };
   }
 
   function edges(px) {
     const out = {};
-    const margin = 5 * MM; // stay clear of the corners
-    for (const name of ['left', 'right', 'top', 'bottom']) {
-      const ref = borderRef(px, name);
-      let white = 0, total = 0;
-      const marks = [];
-      const len = name === 'left' || name === 'right' ? CH : CW;
+    const margin = 5 * MM; // corners are graded separately
+    for (const name of SIDES) {
+      const refs = localRefs(px, name, 12, 22);
+      const len = sideLen(name);
+      const worn = [], shine = [];
       for (let t = margin; t < len - margin; t++) {
-        let hit = 0;
-        for (let m = 2; m <= 9; m++) { // 0.2–0.9 mm from the edge
-          const [x, y] = name === 'left' ? [m, t] : name === 'right' ? [CW - 1 - m, t] : name === 'top' ? [t, m] : [t, CH - 1 - m];
-          total++;
-          if (isWhitening(P(px, x, y), ref)) { white++; hit++; }
-        }
-        if (hit >= 3) marks.push(t);
+        const r = edgeProfile(px, name, t, refs[t]);
+        if (r.worn) worn.push(t);
+        else if (r.shine) shine.push(t);
       }
-      out[name] = { whitening: white / total, marks: clusterMarks(marks) };
+      // Real wear forms runs along the edge (≥0.4 mm); isolated hits are foil glints / noise.
+      const marks = clusterMarks(worn, 4);
+      const wornLen = marks.reduce((a, m) => a + (m.to - m.from + 1), 0);
+      // How much the light varies along this border (reflections, holo sheen) — for the report.
+      const lums = refs.slice(margin, len - margin).map((c) => lumOf(...c));
+      const uneven = quantile(lums, 0.95) - quantile(lums, 0.05);
+      out[name] = { whitening: wornLen / (len - 2 * margin), marks, shine: shine.length / (len - 2 * margin), uneven };
     }
     return out;
   }
-  // Group consecutive wear positions into segments [{from, to}] for the overlay.
-  function clusterMarks(ts) {
+  // Group consecutive positions into segments [{from, to}] at least minLen px long.
+  function clusterMarks(ts, minLen = 4) {
     const segs = [];
     for (const t of ts) {
       const last = segs[segs.length - 1];
-      if (last && t - last.to <= 6) last.to = t; else segs.push({ from: t, to: t });
+      if (last && t - last.to <= 3) last.to = t; else segs.push({ from: t, to: t });
     }
-    return segs.filter((s) => s.to - s.from >= 3);
+    return segs.filter((s) => s.to - s.from + 1 >= minLen);
   }
 
   function corners(px, bg, thr) {
     const size = Math.round(4.5 * MM);
+    const R = CORNER_R;
     const out = {};
-    const refs = { left: borderRef(px, 'left'), right: borderRef(px, 'right'), top: borderRef(px, 'top'), bottom: borderRef(px, 'bottom') };
-    for (const [name, sx, sy, a, b] of [['topLeft', 0, 0, 'left', 'top'], ['topRight', 1, 0, 'right', 'top'], ['bottomLeft', 0, 1, 'left', 'bottom'], ['bottomRight', 1, 1, 'right', 'bottom']]) {
-      let mismatch = 0, area = 0, white = 0, cardPx = 0;
+    const refAt = {}; // border colour just outside each corner zone, per side
+    for (const name of SIDES) {
+      const refs = localRefs(px, name, 12, 22);
+      const len = sideLen(name);
+      refAt[name] = { start: refs[Math.round(6 * MM)], end: refs[len - 1 - Math.round(6 * MM)] };
+    }
+    const spec = [['topLeft', 0, 0, refAt.left.start, refAt.top.start], ['topRight', 1, 0, refAt.right.start, refAt.top.end],
+      ['bottomLeft', 0, 1, refAt.left.end, refAt.bottom.start], ['bottomRight', 1, 1, refAt.right.end, refAt.bottom.end]];
+    for (const [name, sx, sy, refV, refH] of spec) {
+      const ref = medColor([refV, refH]);
+      let mismatch = 0, area = 0, white = 0, cand = 0, shine = 0;
+      const toXY = (i, j) => [sx ? CW - 1 - i : i, sy ? CH - 1 - j : j];
       for (let j = 0; j < size; j++) {
         for (let i = 0; i < size; i++) {
-          const x = sx ? CW - 1 - i : i, y = sy ? CH - 1 - j : j;
-          // Ideal rounded corner: inside the card unless beyond the arc.
-          const dx = CORNER_R - i, dy = CORNER_R - j;
-          const ideal = !(i < CORNER_R && j < CORNER_R && dx * dx + dy * dy > CORNER_R * CORNER_R);
+          const [x, y] = toXY(i, j);
+          // Ideal die-cut corner: inside the card unless beyond the arc.
+          const inArc = i < R && j < R;
+          const dArc = inArc ? R - Math.hypot(R - i, R - j) : null;
+          const ideal = !(inArc && dArc < 0);
           const p = P(px, x, y);
           const isCard = dist3(p, bg) > thr;
           area++;
           if (isCard !== ideal) mismatch++;
-          if (isCard) {
-            cardPx++;
-            if (i < 1.6 * MM || j < 1.6 * MM) { if (isWhitening(p, refs[i < j ? a : b])) white++; }
-          }
+          if (!isCard) continue;
+          // Depth into the card from the nearest edge (or the arc) and the inward direction.
+          let depth, ux, uy;
+          if (inArc) { depth = dArc; const h = Math.hypot(R - i, R - j) || 1; ux = (R - i) / h; uy = (R - j) / h; } else if (i < j) { depth = i; ux = 1; uy = 0; } else { depth = j; ux = 0; uy = 1; }
+          if (depth < 1.5 || depth > 12) continue;
+          cand++;
+          if (!brighterPaler(p, ref)) continue;
+          // Same sharp-step test as the edges: 1 mm further in should be back to normal.
+          const [ix, iy] = toXY(Math.round(i + ux * 10), Math.round(j + uy * 10));
+          const inner = P(px, ix, iy);
+          if (excess(inner, ref) < 0.4 * excess(p, ref)) white++; else shine++;
         }
       }
-      out[name] = { shape: mismatch / area, whitening: cardPx ? white / cardPx : 0 };
+      out[name] = { shape: mismatch / area, whitening: cand ? white / cand : 0, shine: cand ? shine / cand : 0 };
     }
     return out;
   }
@@ -411,40 +471,50 @@
     return [a[0], a[1], b[0], b[1]];
   }
 
-  // Spots, stains and print marks inside the border band, where the colour should be even.
+  // Spots, stains and dirt inside the border band, where the colour should be even. Only marks
+  // DARKER than the surrounding border count: reflections, foil sparkle and glare are always
+  // brighter, so they can't be mistaken for dirt. Each pixel is compared with the border colour
+  // around that spot, and the threshold adapts to how textured the border is (foil, gradients).
   function spots(px, border) {
     const found = [];
-    const bandOk = (name) => border[name] != null && border[name] > 1.8;
     const visited = new Uint8Array(CW * CH);
-    for (const name of ['left', 'right', 'top', 'bottom']) {
-      if (!bandOk(name)) continue;
-      const ref = borderRef(px, name, 1.0, Math.max(1.2, border[name] - 0.6));
-      const inner = Math.floor((border[name] - 0.5) * MM);
-      const len = name === 'left' || name === 'right' ? CH : CW;
+    for (const name of SIDES) {
+      if (border[name] == null || border[name] <= 1.8) continue;
+      const d0 = 10, d1 = Math.max(12, Math.floor((border[name] - 0.6) * MM));
+      const refs = localRefs(px, name, d0, d1, 40);
+      const len = sideLen(name);
+      // Texture of this border band → threshold.
+      const devs = [];
+      for (let t = 5 * MM; t < len - 5 * MM; t += 4) for (let m = d0; m <= d1; m += 3) devs.push(dist3(P(px, ...at(name, m, t)), refs[t]));
+      const mad = median(devs);
+      const thr = Math.max(45, mad * 6);
+      const isMark = (p, ref) => {
+        const dl = lumOf(...p) - lumOf(...ref);
+        return dl < -12 && dist3(p, ref) > thr; // darker (or darker + discoloured) only
+      };
+      const tOf = (x, y) => (name === 'left' || name === 'right' ? y : x);
       for (let t = 5 * MM; t < len - 5 * MM; t++) {
-        for (let m = 10; m < inner; m++) {
-          const [x, y] = name === 'left' ? [m, t] : name === 'right' ? [CW - 1 - m, t] : name === 'top' ? [t, m] : [t, CH - 1 - m];
+        for (let m = d0; m <= d1; m++) {
+          const [x, y] = at(name, m, t);
           const k = y * CW + x;
-          if (visited[k]) continue;
-          if (dist3(P(px, x, y), ref) > 55 && !isWhitening(P(px, x, y), ref)) {
-            // Flood the blob.
-            const stack = [k];
-            visited[k] = 1;
-            let n = 0, sx = 0, sy = 0;
-            while (stack.length && n < 4000) {
-              const q = stack.pop();
-              const qx = q % CW, qy = (q / CW) | 0;
-              n++; sx += qx; sy += qy;
-              for (const [nx, ny] of [[qx - 1, qy], [qx + 1, qy], [qx, qy - 1], [qx, qy + 1]]) {
-                if (nx < 10 || ny < 10 || nx >= CW - 10 || ny >= CH - 10) continue;
-                const nk = ny * CW + nx;
-                if (visited[nk]) continue;
-                if (dist3(P(px, nx, ny), ref) > 55) { visited[nk] = 1; stack.push(nk); }
-              }
+          if (visited[k] || !isMark(P(px, x, y), refs[t])) continue;
+          const stack = [k];
+          visited[k] = 1;
+          let n = 0, sx = 0, sy = 0;
+          while (stack.length && n < 4000) {
+            const q = stack.pop();
+            const qx = q % CW, qy = (q / CW) | 0;
+            n++; sx += qx; sy += qy;
+            for (const [nx, ny] of [[qx - 1, qy], [qx + 1, qy], [qx, qy - 1], [qx, qy + 1]]) {
+              if (nx < d0 || ny < d0 || nx >= CW - d0 || ny >= CH - d0) continue;
+              const nk = ny * CW + nx;
+              if (visited[nk]) continue;
+              const nt = clamp(tOf(nx, ny), 0, len - 1);
+              if (isMark(P(px, nx, ny), refs[nt])) { visited[nk] = 1; stack.push(nk); }
             }
-            const areaMm2 = n / (MM * MM);
-            if (areaMm2 >= 0.15 && areaMm2 < 40) found.push({ x: sx / n, y: sy / n, areaMm2 });
           }
+          const areaMm2 = n / (MM * MM);
+          if (areaMm2 >= 0.25 && areaMm2 < 40) found.push({ x: sx / n, y: sy / n, areaMm2 });
         }
       }
     }
@@ -469,7 +539,10 @@
     const b = backWorst == null ? 10 : backWorst <= 75 ? 10 : backWorst <= 90 ? 9 : 5;
     return Math.min(f, b);
   }
-  const gradeWhitening = (f) => (f < 0.004 ? 10 : f < 0.012 ? 9 : f < 0.03 ? 8 : f < 0.06 ? 7 : f < 0.1 ? 6 : f < 0.16 ? 5 : f < 0.25 ? 4 : 3);
+  // f = share of the edge's length showing wear (clustered, sharp-step whitening only).
+  const gradeWhitening = (f) => (f < 0.01 ? 10 : f < 0.03 ? 9 : f < 0.07 ? 8 : f < 0.13 ? 7 : f < 0.2 ? 6 : f < 0.3 ? 5 : f < 0.45 ? 4 : 3);
+  // c = share of a corner's rim that is whitened.
+  const gradeCornerWhite = (c) => (c < 0.04 ? 10 : c < 0.08 ? 9 : c < 0.14 ? 8 : c < 0.22 ? 7 : c < 0.32 ? 6 : 5);
   const gradeShape = (m) => (m < 0.07 ? 10 : m < 0.1 ? 9 : m < 0.14 ? 8 : m < 0.2 ? 7 : m < 0.28 ? 6 : 5);
   const combine = (gs) => Math.min(Math.round(gs.reduce((a, b) => a + b, 0) / gs.length * 2) / 2, Math.min(...gs) + 1);
 
@@ -518,7 +591,7 @@
 
     // Corners
     const cornerGrades = [];
-    for (const s of sides) for (const c of Object.values(s.corners)) cornerGrades.push(Math.min(gradeWhitening(c.whitening * 0.6), gradeShape(c.shape)));
+    for (const s of sides) for (const c of Object.values(s.corners)) cornerGrades.push(Math.min(gradeCornerWhite(c.whitening), gradeShape(c.shape)));
     const cornersGrade = combine(cornerGrades);
 
     // Surface
@@ -539,19 +612,21 @@
     for (const s of sides) {
       for (const n of sideNames) {
         const w = s.edges[n].whitening;
-        if (w >= 0.012) findings.push({ level: w >= 0.06 ? 'bad' : 'warn', text: `Edge wear (whitening) on the ${n} edge of the ${s.label} — ${(w * 100).toFixed(1)}% of the edge strip` });
+        if (w >= 0.03) findings.push({ level: w >= 0.13 ? 'bad' : 'warn', text: `Edge wear (whitening) on the ${n} edge of the ${s.label} — about ${(w * 100).toFixed(0)}% of its length` });
       }
       for (const [n, c] of Object.entries(s.corners)) {
         const nice = n.replace(/([A-Z])/g, ' $1').toLowerCase();
         if (c.shape >= 0.14) findings.push({ level: c.shape >= 0.2 ? 'bad' : 'warn', text: `${nice[0].toUpperCase() + nice.slice(1)} corner (${s.label}) looks dinged or bent` });
-        else if (c.whitening >= 0.03) findings.push({ level: 'warn', text: `Whitening on the ${nice} corner (${s.label})` });
+        else if (c.whitening >= 0.08) findings.push({ level: c.whitening >= 0.22 ? 'bad' : 'warn', text: `Whitening on the ${nice} corner (${s.label})` });
       }
     }
     if (crease) findings.push({ level: 'bad', text: `Possible crease on the back, about ${crease.lengthMm.toFixed(0)} mm long` });
     for (const p of allSpots.slice(0, 6)) findings.push({ level: p.areaMm2 > 2 ? 'bad' : 'warn', text: `Spot or stain on the ${p.side} border (~${p.areaMm2.toFixed(1)} mm²)` });
+    const lit = sides.filter((s) => SIDES.some((n) => s.edges[n].shine > 0.04 || s.edges[n].uneven > 35) || Object.values(s.corners).some((c) => c.shine > 0.08) || s.glare > 0.004);
+    if (lit.length) findings.push({ level: 'info', text: `Reflections / holo shine detected on the ${lit.map((s) => s.label).join(' and ')} — recognised as light, not wear, and not counted against the grade` });
     if (cen.front?.worst > 60) findings.push({ level: cen.front.worst > 70 ? 'bad' : 'warn', text: `Front is off-center (${fmtRatio(cen.front)})` });
     if (!cen.front?.measurable) findings.push({ level: 'info', text: 'Front centering couldn’t be measured (full-art or borderless card?)' });
-    if (!findings.length) findings.push({ level: 'good', text: 'No wear, creases or marks detected' });
+    if (!findings.some((f) => f.level === 'bad' || f.level === 'warn')) findings.unshift({ level: 'good', text: 'No wear, creases or marks detected' });
 
     const confidence = warnings.length === 0 ? 'good' : warnings.length === 1 ? 'fair' : 'low';
     return {
@@ -597,7 +672,7 @@
     x.lineWidth = 3;
     const size = 4.5 * MM;
     for (const [n, c] of Object.entries(s.corners)) {
-      const bad = c.shape >= 0.14 || c.whitening >= 0.03;
+      const bad = c.shape >= 0.14 || c.whitening >= 0.08;
       x.strokeStyle = bad ? 'rgba(255, 77, 109, .95)' : 'rgba(52, 245, 166, .9)';
       const cx = n.endsWith('Right') ? CW - size : 0, cy = n.startsWith('bottom') ? CH - size : 0;
       x.strokeRect(cx + 1.5, cy + 1.5, size - 3, size - 3);
