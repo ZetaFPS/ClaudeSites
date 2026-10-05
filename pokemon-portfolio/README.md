@@ -23,6 +23,18 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   Unlimited printings are the default over 1st Edition. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
+- **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
+  to see their 5 most valuable cards. Values are recalculated on the server from current market
+  prices (saved prices can't be faked), and only display names, totals and top cards are public —
+  never emails. Anyone can hide themselves under **Account → Show me on the leaderboard**.
+- **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades:
+  - *Centering*: border widths measured in mm on every side → ratios like `55/45` (L/R and T/B),
+    front and back, checked against PSA's centering standards
+  - *Edges*: whitening/chipping along each edge
+  - *Corners*: wear and dings (compared with the card's die-cut corner shape)
+  - *Surface*: creases (long, straight, thin lines on the back), spots/stains in the borders, glare
+  The report shows what was measured on the straightened photos and, if you link a card from your
+  collection, its value at the estimated grade. (`public/grader.js`; runs entirely in the browser.)
 - Works on phones, tablets and desktops: on large screens you get a sidebar, a dashboard layout,
   a card-grid collection and a side-by-side card view.
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,
@@ -85,7 +97,8 @@ server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/ca
 lib/auth.js      scrypt password hashing, 30-day HttpOnly session cookies
 lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
-public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching
+lib/leaderboard.js  server-side collection values and rankings
+public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, grader.js = pre-grading
 ```
 
 Prices are cached on the server (card data 6 h, prices 12 h) and the app refreshes your

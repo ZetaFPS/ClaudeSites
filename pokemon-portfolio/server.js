@@ -7,6 +7,7 @@ const path = require('path');
 const { createStore } = require('./lib/store');
 const { createAuth, httpError } = require('./lib/auth');
 const prices = require('./lib/prices');
+const { createLeaderboard } = require('./lib/leaderboard');
 
 const PORT = +process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -14,7 +15,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth; // set up in start()
+let store, auth, leaderboard; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -127,6 +128,36 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(req, '', 0) });
   }
 
+  // --- account settings ---
+  if (pathname === '/api/account' && method === 'PUT') {
+    const user = await requireUser(req);
+    const body = await readBody(req);
+    const fields = {};
+    if (typeof body.showOnLeaderboard === 'boolean') fields.showOnLeaderboard = body.showOnLeaderboard;
+    if (typeof body.name === 'string') {
+      const name = body.name.trim().slice(0, 40);
+      if (!name) throw httpError(400, 'Display name can’t be empty.');
+      fields.name = name;
+    }
+    const updated = await store.updateUser(user.id, fields);
+    leaderboard.invalidate();
+    return send(res, 200, { user: auth.publicUser(updated) });
+  }
+
+  // --- one card's details (used when opening a card from someone's profile) ---
+  const cm = decodeURIComponent(pathname).match(/^\/api\/card\/([A-Za-z0-9._:-]{1,80})$/);
+  if (cm && method === 'GET') {
+    limitApi(req);
+    return send(res, 200, { card: await prices.getCard(cm[1]) });
+  }
+
+  // --- leaderboard ---
+  if (pathname === '/api/leaderboard' && method === 'GET') {
+    limitApi(req);
+    const user = await auth.userForToken(cookies(req)[COOKIE]);
+    return send(res, 200, await leaderboard.view(user?.id));
+  }
+
   // --- portfolio sync ---
   if (pathname === '/api/portfolio') {
     const user = await requireUser(req);
@@ -139,6 +170,7 @@ async function api(req, res, url) {
       const history = body.history && typeof body.history === 'object' && !Array.isArray(body.history) ? body.history : {};
       const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
       await store.putPortfolio(user.id, doc);
+      leaderboard.markDirty();
       return send(res, 200, { ok: true, updatedAt: doc.updatedAt });
     }
   }
@@ -261,6 +293,7 @@ const server = http.createServer(async (req, res) => {
 async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
   auth = createAuth(store);
+  leaderboard = createLeaderboard(store, prices);
   server.listen(PORT, () => {
     console.log(`PokéFolio running at http://localhost:${PORT}`);
     console.log(`  accounts stored in: ${store.kind}`);

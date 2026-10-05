@@ -204,6 +204,10 @@
           <div class="info"><div class="k">Member since</div><div class="v">${new Date(user.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</div></div>
           <div class="info"><div class="k">Sync</div><div class="v">${esc($('#syncState').textContent || '—')}</div></div>
         </div>
+        <label class="switch-row glass">
+          <span><b>Show me on the leaderboard</b><small>Shows your display name, total value and top 5 cards. Never your email.</small></span>
+          <input type="checkbox" id="lbToggle" ${user.showOnLeaderboard !== false ? 'checked' : ''}><i aria-hidden="true"></i>
+        </label>
         <div class="actions"><button class="btn danger block" id="logoutBtn">Sign out</button></div>
       </div>` : `
       <div class="acct">
@@ -224,6 +228,17 @@
       lsDel(storeKey());
       signedOut();
       toast('Signed out');
+    });
+    $('#lbToggle')?.addEventListener('change', async (e) => {
+      const on = e.currentTarget.checked;
+      try {
+        user = (await api('/api/account', { method: 'PUT', body: { showOnLeaderboard: on } })).user;
+        toast(on ? 'You’re on the leaderboard' : 'Hidden from the leaderboard');
+        lbData = null;
+      } catch {
+        e.currentTarget.checked = !on;
+        toast('Couldn’t save — try again');
+      }
     });
     $('#toSignup')?.addEventListener('click', () => { showAuth(); setAuthMode('signup'); });
     $('#toLogin')?.addEventListener('click', () => { showAuth(); setAuthMode('login'); });
@@ -338,6 +353,8 @@
     if (view !== 'scan' || focusSearch) stopCamera();
     else if (!stream) startCamera();
     if (view === 'portfolio') renderPortfolio();
+    if (view === 'leaders') loadLeaderboard();
+    if (view === 'grade') prepareGrader();
     if (focusSearch) setTimeout(() => $('#searchInput').focus(), 50);
     window.scrollTo({ top: 0 });
   }
@@ -1205,6 +1222,237 @@
   $('#sheetClose').addEventListener('click', closeSheet);
   $('#sheetBackdrop').addEventListener('click', closeSheet);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
+
+  /* ================= Leaderboard ================= */
+  let lbData = null;
+  let lbLoading = null;
+  const medal = (r) => (r === 1 ? 'gold' : r === 2 ? 'silver' : r === 3 ? 'bronze' : '');
+  const nameInitial = (n) => esc(String(n || '?').trim().charAt(0).toUpperCase() || '?');
+
+  async function loadLeaderboard(force = false) {
+    if (lbData && !force) return renderLeaderboard();
+    if (!lbData) {
+      $('#podium').innerHTML = '';
+      $('#lbList').innerHTML = Array.from({ length: 5 }, () => '<div class="lb-row skeleton-row"></div>').join('');
+    }
+    if (!lbLoading) {
+      lbLoading = api('/api/leaderboard').finally(() => { lbLoading = null; });
+    }
+    try {
+      lbData = await lbLoading;
+      renderLeaderboard();
+    } catch (e) {
+      $('#lbList').innerHTML = `<p class="note">${e.status === 429 ? esc(e.message) : 'Couldn’t load the leaderboard. Try again shortly.'}</p>`;
+    }
+  }
+  $('#lbRefresh').addEventListener('click', () => loadLeaderboard(true));
+
+  function renderLeaderboard() {
+    const d = lbData;
+    const entries = d.entries || [];
+    $('#lbSub').textContent = `${d.total} collector${d.total === 1 ? '' : 's'} · updated ${timeAgo(d.computedAt)}`;
+    const me = $('#lbMe');
+    if (user && d.me) {
+      me.hidden = false;
+      me.innerHTML = d.me.hidden
+        ? `<span class="lb-me-rank">—</span><span><b>You’re hidden from the leaderboard</b><small>Your collection: ${money(d.me.value)} · turn visibility on in your account</small></span>`
+        : `<span class="lb-me-rank num">#${d.me.rank}</span><span><b>Your rank</b><small>${money(d.me.value)} · ${d.me.cards} card${d.me.cards === 1 ? '' : 's'}</small></span>`;
+    } else if (!user) {
+      me.hidden = false;
+      me.innerHTML = '<span class="lb-me-rank">?</span><span><b>Want a spot on the board?</b><small>Create a free account and your collection is ranked automatically.</small></span>';
+    } else {
+      me.hidden = false;
+      me.innerHTML = '<span class="lb-me-rank">—</span><span><b>Not ranked yet</b><small>Add cards to your collection to join the leaderboard.</small></span>';
+    }
+    if (!entries.length) {
+      $('#podium').innerHTML = '';
+      $('#lbList').innerHTML = '<div class="empty-state"><h3>No collectors yet</h3><p>Be the first — add cards to your collection.</p></div>';
+      return;
+    }
+    const top3 = entries.slice(0, 3);
+    const order = [top3[1], top3[0], top3[2]].filter(Boolean); // 2nd, 1st, 3rd
+    $('#podium').innerHTML = order.map((e) => `
+      <button class="pod ${medal(e.rank)} ${user && e.id === user.id ? 'is-me' : ''}" data-lb="${esc(e.id)}">
+        <span class="pod-avatar">${nameInitial(e.name)}<i>${e.rank}</i></span>
+        <span class="pod-name">${esc(e.name)}</span>
+        <span class="pod-value num">${money(e.value)}</span>
+        <span class="pod-cards">${e.cards} card${e.cards === 1 ? '' : 's'}</span>
+        <span class="pod-step"></span>
+      </button>`).join('');
+    $('#lbList').innerHTML = entries.slice(3).map((e) => `
+      <button class="lb-row glass ${user && e.id === user.id ? 'is-me' : ''}" data-lb="${esc(e.id)}">
+        <span class="lb-rank num">${e.rank}</span>
+        <span class="pod-avatar sm">${nameInitial(e.name)}</span>
+        <span class="lb-name">${esc(e.name)}${user && e.id === user.id ? ' <em>you</em>' : ''}<small>${e.cards} card${e.cards === 1 ? '' : 's'}</small></span>
+        <span class="lb-thumbs">${e.top.slice(0, 3).map((t) => (t.image ? `<img src="${esc(t.image)}" alt="" loading="lazy">` : '')).join('')}</span>
+        <span class="lb-value num">${money(e.value)}</span>
+      </button>`).join('');
+  }
+
+  function openProfile(id) {
+    const e = lbData?.entries.find((x) => x.id === id);
+    if (!e) return;
+    $('#sheetBody').innerHTML = `
+      <div class="profile">
+        <div class="profile-head">
+          <span class="pod-avatar lg ${medal(e.rank)}">${nameInitial(e.name)}</span>
+          <div>
+            <h3 id="sheetTitle">${esc(e.name)}</h3>
+            <p class="muted">Rank #${e.rank} · ${e.cards} card${e.cards === 1 ? '' : 's'}</p>
+          </div>
+          <div class="profile-value"><span class="eyebrow">Collection</span><b class="num">${money(e.value)}</b></div>
+        </div>
+        <h4 class="profile-sub">Top ${Math.min(5, e.top.length)} card${e.top.length === 1 ? '' : 's'}</h4>
+        <div class="profile-cards">
+          ${e.top.map((t, i) => `
+            <button class="pcard" data-card="${esc(t.id)}">
+              <span class="pcard-rank">${i + 1}</span>
+              ${t.image ? `<img src="${esc(t.image)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+              <span class="name">${esc(t.name)}</span>
+              <span class="sub">${esc(t.set)}${t.number ? ` · #${esc(t.number)}` : ''}</span>
+              <span class="p num">${money(t.price)}${t.qty > 1 ? ` <small>×${t.qty}</small>` : ''}</span>
+            </button>`).join('')}
+        </div>
+      </div>`;
+    openSheetShell();
+    $$('.pcard').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        const { card } = await api(`/api/card/${encodeURIComponent(b.dataset.card)}`);
+        if (card) openCard({ card });
+      } catch { toast('Couldn’t load that card'); }
+    }));
+  }
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-lb]');
+    if (b) openProfile(b.dataset.lb);
+  });
+
+  /* ================= Grader ================= */
+  const gradeFiles = { front: null, back: null };
+  function prepareGrader() {
+    const sel = $('#gradeCard');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Not linked</option>' + state.items
+      .filter((it) => it.card)
+      .map((it) => `<option value="${esc(it.uid)}">${esc(it.card.name)} · ${esc(it.card.set?.name)} #${esc(it.card.number)}</option>`).join('');
+    sel.value = state.items.some((it) => it.uid === current) ? current : '';
+  }
+  for (const side of ['front', 'back']) {
+    const input = $(side === 'front' ? '#gradeFront' : '#gradeBack');
+    const drop = $(side === 'front' ? '#dropFront' : '#dropBack');
+    input.addEventListener('change', () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      gradeFiles[side] = f;
+      const img = $('img', drop);
+      if (img.src) URL.revokeObjectURL(img.src);
+      img.src = URL.createObjectURL(f);
+      img.hidden = false;
+      drop.classList.add('has-img');
+      $('#gradeBtn').disabled = !gradeFiles.front;
+    });
+  }
+
+  const GRADE_NAMES = { 10: 'Gem Mint', 9: 'Mint', 8: 'NM-MT', 7: 'Near Mint', 6: 'EX-MT', 5: 'Excellent', 4: 'VG-EX', 3: 'Very Good', 2: 'Good', 1: 'Poor' };
+  $('#gradeBtn').addEventListener('click', async () => {
+    const btn = $('#gradeBtn');
+    const out = $('#gradeResult');
+    if (!window.CardGrader || !gradeFiles.front) return;
+    btn.disabled = true;
+    btn.textContent = 'Analysing…';
+    out.innerHTML = '<div class="grade-empty glass"><div class="reticle small busy" aria-hidden="true"></div><h3>Measuring centering, edges, corners & surface…</h3></div>';
+    try {
+      const r = await window.CardGrader.grade(gradeFiles.front, gradeFiles.back);
+      if (!r.ok) {
+        out.innerHTML = `<div class="grade-empty glass"><h3>Couldn’t grade that</h3>${r.errors.map((e) => `<p>${esc(e)}</p>`).join('')}</div>`;
+        return;
+      }
+      renderGrade(r);
+    } catch (e) {
+      out.innerHTML = '<div class="grade-empty glass"><h3>Something went wrong reading those photos</h3><p>Try a JPEG or PNG photo taken with your phone camera.</p></div>';
+    } finally {
+      btn.disabled = !gradeFiles.front;
+      btn.textContent = 'Grade my card';
+    }
+  });
+
+  function renderGrade(r) {
+    const out = $('#gradeResult');
+    const sub = (label, g, note) => `
+      <div class="subgrade">
+        <div class="sg-top"><span>${label}</span><b class="num">${g}</b></div>
+        <div class="bar"><i style="width:${g * 10}%" class="${g >= 9 ? 'hi' : g >= 7 ? 'mid' : 'lo'}"></i></div>
+        ${note ? `<small>${note}</small>` : ''}
+      </div>`;
+    const ratio = (v) => (v == null ? '—' : `${Math.round(v)}/${100 - Math.round(v)}`);
+    const mm = (v) => (v == null ? '—' : `${v.toFixed(1)} mm`);
+    const cenBlock = (side) => {
+      const c = r.centering[side];
+      if (!c) return '';
+      return `<div class="cen glass">
+          <div class="cen-title">${side === 'front' ? 'Front' : 'Back'} centering</div>
+          <div class="cen-ratios"><div><span>Left / Right</span><b class="num">${ratio(c.lr)}</b></div><div><span>Top / Bottom</span><b class="num">${ratio(c.tb)}</b></div></div>
+          <div class="cen-diagram">
+            <span class="t num">${mm(c.mm.top)}</span><span class="l num">${mm(c.mm.left)}</span>
+            <span class="box"></span>
+            <span class="r num">${mm(c.mm.right)}</span><span class="b num">${mm(c.mm.bottom)}</span>
+          </div>
+        </div>`;
+    };
+    const linked = state.items.find((it) => it.uid === $('#gradeCard').value);
+    out.innerHTML = `
+      <div class="grade-hero glass edge">
+        <div class="grade-badge ${r.overall >= 9 ? 'hi' : r.overall >= 7 ? 'mid' : 'lo'}">
+          <span class="eyebrow">Estimated</span>
+          <b class="num">${r.overall}</b>
+          <span>${GRADE_NAMES[r.overall] || ''}</span>
+        </div>
+        <div class="grade-summary">
+          <div class="eyebrow">PSA-style estimate · likely range ${r.range[0] === r.range[1] ? r.range[0] : `${r.range[0]}–${r.range[1]}`}</div>
+          <div class="conf conf-${r.confidence}">Photo quality: ${r.confidence}</div>
+          <div class="subgrades">
+            ${sub('Centering', r.subs.centering, r.centering.front ? `Front ${ratio(r.centering.front.lr)} L/R · ${ratio(r.centering.front.tb)} T/B` : '')}
+            ${sub('Corners', r.subs.corners)}
+            ${sub('Edges', r.subs.edges)}
+            ${sub('Surface', r.subs.surface)}
+          </div>
+          <div id="gradeValue"></div>
+        </div>
+      </div>
+      ${r.warnings.length ? `<div class="warn-list">${r.warnings.map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}</div>` : ''}
+      <div class="cen-row">${cenBlock('front')}${cenBlock('back')}</div>
+      <div class="section"><h4>Findings</h4>
+        <ul class="findings">${r.findings.map((f) => `<li class="f-${f.level}">${esc(f.text)}</li>`).join('')}</ul>
+      </div>
+      <div class="section"><h4>What we measured</h4>
+        <div class="overlays">
+          ${Object.keys(r.sides).map((s) => `<figure><canvas data-ov="${s}"></canvas><figcaption>${s === 'front' ? 'Front' : 'Back'} — <span class="k-cyan">border lines</span> · <span class="k-red">edge wear</span> · <span class="k-green">good corner</span> / <span class="k-red">worn corner</span>${s === 'back' ? ' · <span class="k-amber">crease / spot</span>' : ' · <span class="k-amber">spot</span>'}</figcaption></figure>`).join('')}
+        </div>
+      </div>
+      <p class="note">This is an estimate from photos, not an official grade. Grading companies inspect cards under magnification and lighting a photo can’t reproduce; holo scratches, print lines and very small dings may not show up. Centering standards used: PSA 10 = 55/45 front, 75/25 back.</p>`;
+    for (const c of $$('canvas[data-ov]', out)) window.CardGrader.drawOverlay(r.sides[c.dataset.ov], c);
+    if (linked) showValueAtGrade(linked, r.overall);
+    out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function showValueAtGrade(item, grade) {
+    const box = $('#gradeValue');
+    box.innerHTML = '<div class="gv"><span class="skeleton-line"></span></div>';
+    try {
+      const res = await api(`/api/prices/${encodeURIComponent(item.cardId)}?variant=${encodeURIComponent(item.variant || '')}`);
+      const p = res.graded?.prices || {};
+      const key = grade === 10 ? 'PSA 10' : `Grade ${grade}`;
+      const raw = res.raw?.price ?? itemPrice(item);
+      const at = p[key];
+      box.innerHTML = `<div class="gv">
+          <div><span class="eyebrow">${esc(item.card.name)} at PSA ${grade}</span><b class="num">${at != null ? money(at) : 'No sales data'}</b></div>
+          <div><span class="eyebrow">Raw</span><b class="num">${money(raw)}</b></div>
+          ${at != null && raw ? `<div><span class="eyebrow">Difference</span><b class="num ${at - raw >= 0 ? 'up' : 'down'}">${signed(at - raw)}</b></div>` : ''}
+        </div>`;
+    } catch {
+      box.innerHTML = '';
+    }
+  }
 
   /* ================= Misc ================= */
   let toastTimer;

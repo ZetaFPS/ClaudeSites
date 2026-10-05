@@ -49,6 +49,18 @@ function fileStore(dir) {
     },
     async getPortfolio(userId) { return data.portfolios[userId] || null; },
     async putPortfolio(userId, doc) { data.portfolios[userId] = doc; save(); },
+    async updateUser(id, fields) {
+      const u = data.users[id];
+      if (!u) return null;
+      Object.assign(u, fields);
+      save();
+      return u;
+    },
+    async listPortfolios() {
+      return Object.entries(data.portfolios)
+        .filter(([uid]) => data.users[uid])
+        .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
+    },
     async close() { flushNow(); },
   };
 }
@@ -81,13 +93,14 @@ async function pgStore(url, legacyDir) {
       expires    BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS sessions_expires ON sessions (expires);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS show_on_leaderboard BOOLEAN NOT NULL DEFAULT TRUE;
     CREATE TABLE IF NOT EXISTS portfolios (
       user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       doc        JSONB NOT NULL,
       updated_at BIGINT NOT NULL
     );`);
 
-  const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at };
+  const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false };
   const store = {
     kind: 'postgres',
     async getUser(id) { return toUser((await q('SELECT * FROM users WHERE id = $1', [id])).rows[0]); },
@@ -112,6 +125,17 @@ async function pgStore(url, legacyDir) {
       await q(`INSERT INTO portfolios (user_id, doc, updated_at) VALUES ($1, $2, $3)
                ON CONFLICT (user_id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = EXCLUDED.updated_at`,
       [userId, JSON.stringify(doc), doc.updatedAt || Date.now()]);
+    },
+    async updateUser(id, fields) {
+      const sets = [], vals = [];
+      if (fields.name != null) { vals.push(fields.name); sets.push(`name = $${vals.length}`); }
+      if (fields.showOnLeaderboard != null) { vals.push(!!fields.showOnLeaderboard); sets.push(`show_on_leaderboard = $${vals.length}`); }
+      if (sets.length) { vals.push(id); await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); }
+      return store.getUser(id);
+    },
+    async listPortfolios() {
+      const { rows } = await q(`SELECT u.id, u.name, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
+      return rows.map((r) => ({ userId: r.id, name: r.name, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
     },
     async close() { await pool.end(); },
   };

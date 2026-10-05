@@ -26,7 +26,7 @@ function createAuth(store) {
   const dummy = hashPassword(crypto.randomBytes(8).toString('hex'));
 
   function publicUser(u) {
-    return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt };
+    return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt, showOnLeaderboard: u.showOnLeaderboard !== false };
   }
 
   async function createSession(userId) {
