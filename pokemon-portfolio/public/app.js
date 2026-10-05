@@ -165,6 +165,10 @@
     if (message) { $('#authError').textContent = message; $('#authError').hidden = false; }
   }
   function signedOut(message) {
+    clearInterval(listTimer);
+    stopChatPolling();
+    groups = [];
+    openGroup = null;
     user = null;
     state = emptyState();
     showAuth(message);
@@ -177,6 +181,8 @@
     $('#auth').hidden = true;
     $('#app').hidden = false;
     go('portfolio');
+    startListPolling();
+    handleInviteLink();
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
     else if (state.items.length) recordSnapshot();
   }
@@ -356,6 +362,8 @@
     if (view === 'portfolio') renderPortfolio();
     if (view === 'leaders') loadLeaderboard();
     if (view === 'grade') prepareGrader();
+    if (view === 'groups') loadGroups();
+    else stopChatPolling();
     if (focusSearch) setTimeout(() => $('#searchInput').focus(), 50);
     window.scrollTo({ top: 0 });
   }
@@ -1270,18 +1278,26 @@
       $('#lbList').innerHTML = '<div class="empty-state"><h3>No collectors yet</h3><p>Be the first — add cards to your collection.</p></div>';
       return;
     }
+    $('#podium').innerHTML = podiumHtml(entries, 'data-lb');
+    $('#lbList').innerHTML = boardListHtml(entries.slice(3), 'data-lb');
+  }
+
+  // Shared by the global and group leaderboards. `attr` decides which click handler opens profiles.
+  function podiumHtml(entries, attr) {
     const top3 = entries.slice(0, 3);
     const order = [top3[1], top3[0], top3[2]].filter(Boolean); // 2nd, 1st, 3rd
-    $('#podium').innerHTML = order.map((e) => `
-      <button class="pod ${medal(e.rank)} ${user && e.id === user.id ? 'is-me' : ''}" data-lb="${esc(e.id)}">
+    return order.map((e) => `
+      <button class="pod ${medal(e.rank)} ${user && e.id === user.id ? 'is-me' : ''}" ${attr}="${esc(e.id)}">
         <span class="pod-avatar">${nameInitial(e.name)}<i>${e.rank}</i></span>
         <span class="pod-name">${esc(e.name)}</span>
         <span class="pod-value num">${money(e.value)}</span>
         <span class="pod-cards">${e.cards} card${e.cards === 1 ? '' : 's'}</span>
         <span class="pod-step"></span>
       </button>`).join('');
-    $('#lbList').innerHTML = entries.slice(3).map((e) => `
-      <button class="lb-row glass ${user && e.id === user.id ? 'is-me' : ''}" data-lb="${esc(e.id)}">
+  }
+  function boardListHtml(entries, attr) {
+    return entries.map((e) => `
+      <button class="lb-row glass ${user && e.id === user.id ? 'is-me' : ''}" ${attr}="${esc(e.id)}">
         <span class="lb-rank num">${e.rank}</span>
         <span class="pod-avatar sm">${nameInitial(e.name)}</span>
         <span class="lb-name">${esc(e.name)}${user && e.id === user.id ? ' <em>you</em>' : ''}<small>${e.cards} card${e.cards === 1 ? '' : 's'}</small></span>
@@ -1290,8 +1306,8 @@
       </button>`).join('');
   }
 
-  function openProfile(id) {
-    const e = lbData?.entries.find((x) => x.id === id);
+  function openProfile(id, entries = lbData?.entries) {
+    const e = entries?.find((x) => x.id === id);
     if (!e) return;
     $('#sheetBody').innerHTML = `
       <div class="profile">
@@ -1327,6 +1343,543 @@
     const b = ev.target.closest('[data-lb]');
     if (b) openProfile(b.dataset.lb);
   });
+
+  /* ================= Groups ================= */
+  let groups = [];
+  let openGroup = null; // { id, details, tab, messages: [], lastSeq, firstSeq, board }
+  let chatTimer = null, listTimer = null;
+  const PENDING_JOIN = 'pokefolio.join';
+
+  // Stable gradient per group name, so each group is recognisable in the list.
+  function groupHue(id) { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+  const gAvatar = (g, cls = '') => `<span class="g-avatar ${cls}" style="--h:${groupHue(g.id)}">${nameInitial(g.name)}</span>`;
+  const clock = (t) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  function dayLabel(t) {
+    const d = new Date(t), now = new Date();
+    const y = new Date(now); y.setDate(now.getDate() - 1);
+    if (d.toDateString() === now.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+  }
+  function preview(last) {
+    if (!last) return 'No messages yet';
+    const who = last.mine ? 'You' : last.name;
+    if (last.kind === 'system') return last.body;
+    if (last.kind === 'image') return `${who} sent a photo`;
+    if (last.kind === 'card') return `${who} shared a card`;
+    return `${who}: ${last.body}`;
+  }
+
+  async function refreshGroupList() {
+    if (!user) return;
+    try {
+      const res = await api('/api/groups');
+      groups = res.groups;
+      const badge = $('#groupsBadge');
+      badge.hidden = !res.unread;
+      badge.textContent = res.unread > 99 ? '99+' : res.unread;
+      if ($('#view-groups').classList.contains('active')) renderGroupList();
+    } catch (e) {
+      if (e.status === 401) signedOut('Your session expired — please sign in again.');
+    }
+  }
+  function startListPolling() {
+    clearInterval(listTimer);
+    if (user) { refreshGroupList(); listTimer = setInterval(() => { if (!document.hidden) refreshGroupList(); }, 25000); }
+  }
+
+  async function loadGroups() {
+    if (!user) {
+      $('#groupsList').innerHTML = '';
+      $('#groupPane').innerHTML = `<div class="group-empty"><div class="reticle small" aria-hidden="true"></div>
+        <h3>Groups need an account</h3><p>Create a free account to start group chats with friends, share your pulls and compete on a group leaderboard.</p>
+        <button class="btn primary glow" id="groupsSignup">Create account</button></div>`;
+      $('#groupsSignup').addEventListener('click', () => { showAuth(); setAuthMode('signup'); });
+      $$('.groups-actions .btn').forEach((b) => { b.disabled = true; });
+      return;
+    }
+    $$('.groups-actions .btn').forEach((b) => { b.disabled = false; });
+    if (!groups.length) $('#groupsList').innerHTML = Array.from({ length: 3 }, () => '<div class="lb-row skeleton-row"></div>').join('');
+    await refreshGroupList();
+    renderGroupList();
+    if (openGroup) renderGroupPane();
+  }
+
+  function renderGroupList() {
+    const list = $('#groupsList');
+    if (!groups.length) {
+      list.innerHTML = '<div class="groups-none"><b>No groups yet</b><span>Create one, or join with an invite code from a friend.</span></div>';
+      return;
+    }
+    list.innerHTML = groups.map((g) => `
+      <button class="g-item ${openGroup?.id === g.id ? 'active' : ''}" data-group="${esc(g.id)}">
+        ${gAvatar(g)}
+        <span class="g-main">
+          <span class="g-name">${esc(g.name)}</span>
+          <span class="g-last">${esc(preview(g.last))}</span>
+        </span>
+        <span class="g-meta">
+          <span class="g-time">${g.last ? esc(clock(g.last.createdAt)) : ''}</span>
+          ${g.unread ? `<b class="g-unread">${g.unread > 99 ? '99+' : g.unread}</b>` : `<span class="g-count">${g.memberCount} 👤</span>`}
+        </span>
+      </button>`).join('');
+  }
+  $('#groupsList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-group]');
+    if (b) openGroupById(b.dataset.group);
+  });
+
+  async function openGroupById(id, tab = 'chat') {
+    stopChatPolling();
+    openGroup = { id, tab, messages: [], lastSeq: 0, firstSeq: null, details: null, board: null, done: false };
+    $('#groupsLayout').classList.add('has-open');
+    renderGroupList();
+    $('#groupPane').innerHTML = '<div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div>';
+    try {
+      openGroup.details = (await api(`/api/groups/${id}`)).group;
+    } catch (e) {
+      toast(e.message || 'Couldn’t open that group');
+      closeGroup();
+      refreshGroupList();
+      return;
+    }
+    renderGroupPane();
+  }
+  function closeGroup() {
+    stopChatPolling();
+    openGroup = null;
+    $('#groupsLayout').classList.remove('has-open');
+    renderGroupList();
+    $('#groupPane').innerHTML = '<div class="group-empty"><div class="reticle small" aria-hidden="true"></div><h3>Pick a group</h3><p>Or start a new one and share its invite code with friends.</p></div>';
+  }
+
+  function renderGroupPane() {
+    const g = openGroup?.details;
+    if (!g) return;
+    $('#groupPane').innerHTML = `
+      <div class="group-head">
+        <button class="icon-btn g-back" id="gBack" aria-label="Back to groups">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        ${gAvatar(g)}
+        <div class="g-title"><h3>${esc(g.name)}</h3><small>${g.members.length} member${g.members.length === 1 ? '' : 's'}</small></div>
+      </div>
+      <div class="g-tabs" role="tablist">
+        ${[['chat', 'Chat'], ['board', 'Leaderboard'], ['members', 'Members']].map(([k, l]) => `<button role="tab" data-gtab="${k}" class="${openGroup.tab === k ? 'active' : ''}">${l}</button>`).join('')}
+      </div>
+      <div class="g-body" id="gBody"></div>`;
+    $('#gBack').addEventListener('click', closeGroup);
+    $$('[data-gtab]').forEach((b) => b.addEventListener('click', () => { openGroup.tab = b.dataset.gtab; renderGroupPane(); }));
+    if (openGroup.tab === 'chat') renderChat();
+    else stopChatPolling();
+    if (openGroup.tab === 'board') renderGroupBoard();
+    if (openGroup.tab === 'members') {
+      renderMembers();
+      const g = openGroup, before = g.details.members.length;
+      refreshGroupDetails(g).then(() => { if (openGroup === g && g.tab === 'members' && g.details.members.length !== before) renderMembers(); });
+    }
+  }
+
+  /* ---- chat ---- */
+  function renderChat() {
+    $('#gBody').innerHTML = `
+      <div class="chat" id="chatScroll">
+        <button class="btn ghost load-older" id="loadOlder" hidden>Load earlier messages</button>
+        <div id="chatMsgs"></div>
+      </div>
+      <form class="composer" id="composer" autocomplete="off">
+        <button type="button" class="icon-btn" id="attachPhoto" title="Send a photo" aria-label="Send a photo">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="attachCard" title="Share a card from your collection" aria-label="Share a card">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M9 16h6"/></svg>
+        </button>
+        <input type="file" id="chatPhoto" accept="image/*" hidden>
+        <textarea id="chatInput" rows="1" maxlength="2000" placeholder="Message…"></textarea>
+        <button class="send" id="sendBtn" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.4 20.4l17.5-7.5a1 1 0 0 0 0-1.8L3.4 3.6a1 1 0 0 0-1.4 1.1L4 11l9 1-9 1-2 6.3a1 1 0 0 0 1.4 1.1z"/></svg>
+        </button>
+      </form>`;
+    paintMessages(true);
+    const input = $('#chatInput');
+    const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(140, input.scrollHeight) + 'px'; };
+    input.addEventListener('input', grow);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit(); }
+    });
+    $('#composer').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      sendMessage({ text }).then((ok) => { if (ok) { input.value = ''; grow(); } });
+    });
+    $('#attachPhoto').addEventListener('click', () => $('#chatPhoto').click());
+    $('#chatPhoto').addEventListener('change', async (e) => {
+      const f = e.target.files?.[0];
+      e.target.value = '';
+      if (!f) return;
+      try {
+        const image = await shrinkPhoto(f);
+        await sendMessage({ kind: 'image', image, text: input.value.trim() }).then((ok) => { if (ok) { input.value = ''; grow(); } });
+      } catch { toast('Couldn’t read that photo'); }
+    });
+    $('#attachCard').addEventListener('click', pickCardToShare);
+    $('#loadOlder').addEventListener('click', loadOlder);
+    $('#chatMsgs').addEventListener('click', onChatClick);
+    if (!openGroup.messages.length) fetchMessages(true); else { fetchMessages(false); startChatPolling(); }
+    refreshGroupDetails(openGroup);
+  }
+
+  // Phone photos are huge: send at most 1600 px, JPEG.
+  async function shrinkPhoto(file) {
+    const img = await createImageBitmap(file);
+    const s = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+    x.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.85);
+  }
+
+  async function fetchMessages(initial = false) {
+    const g = openGroup;
+    if (!g) return;
+    try {
+      const res = await api(`/api/groups/${g.id}/messages?${initial ? 'limit=50' : `after=${g.lastSeq}`}`);
+      if (openGroup !== g) return;
+      if (res.messages.length) {
+        g.messages = initial ? res.messages : g.messages.concat(res.messages.filter((m) => m.seq > g.lastSeq));
+        g.lastSeq = g.messages[g.messages.length - 1].seq;
+        g.firstSeq = g.messages[0].seq;
+        if (initial) g.done = res.messages.length < 50;
+        paintMessages(initial);
+        // Someone joined, left, was removed or the group was renamed: refresh the header.
+        if (!initial && res.messages.some((m) => m.kind === 'system')) refreshGroupDetails(g);
+        const item = groups.find((x) => x.id === g.id);
+        if (item && item.unread) { item.unread = 0; renderGroupList(); refreshGroupList(); }
+      } else if (initial) {
+        g.done = true;
+        paintMessages(true);
+      }
+    } catch (e) {
+      if (e.status === 403 || e.status === 404) { toast('You’re no longer in this group'); closeGroup(); refreshGroupList(); return; }
+    }
+    if (initial) startChatPolling();
+  }
+  async function refreshGroupDetails(g) {
+    try {
+      const { group } = await api(`/api/groups/${g.id}`);
+      if (openGroup !== g) return;
+      g.details = group;
+      const t = $('.g-title');
+      if (t) t.innerHTML = `<h3>${esc(group.name)}</h3><small>${group.members.length} member${group.members.length === 1 ? '' : 's'}</small>`;
+    } catch (e) {
+      if (e.status === 403 || e.status === 404) { toast('You’re no longer in this group'); closeGroup(); refreshGroupList(); }
+    }
+  }
+  function startChatPolling() {
+    stopChatPolling();
+    chatTimer = setInterval(() => { if (!document.hidden && openGroup?.tab === 'chat') fetchMessages(false); }, 3000);
+  }
+  function stopChatPolling() { clearInterval(chatTimer); chatTimer = null; }
+
+  async function loadOlder() {
+    const g = openGroup;
+    const btn = $('#loadOlder');
+    btn.disabled = true;
+    try {
+      const res = await api(`/api/groups/${g.id}/messages?before=${g.firstSeq}&limit=50`);
+      if (openGroup !== g) return;
+      if (res.messages.length) { g.messages = res.messages.concat(g.messages); g.firstSeq = g.messages[0].seq; }
+      g.done = res.messages.length < 50;
+      const sc = $('#chatScroll'), before = sc.scrollHeight;
+      paintMessages(false);
+      sc.scrollTop += sc.scrollHeight - before;
+    } finally { btn.disabled = false; }
+  }
+
+  function paintMessages(scrollToEnd) {
+    const box = $('#chatMsgs');
+    if (!box || !openGroup) return;
+    const sc = $('#chatScroll');
+    const nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120;
+    const isOwner = openGroup.details.myRole === 'owner';
+    let html = '', prevDay = '', prevUser = null, prevTime = 0;
+    for (const m of openGroup.messages) {
+      const day = dayLabel(m.createdAt);
+      if (day !== prevDay) { html += `<div class="day-sep"><span>${esc(day)}</span></div>`; prevDay = day; prevUser = null; }
+      if (m.kind === 'system') { html += `<div class="sys-msg">${esc(m.body)} · ${esc(clock(m.createdAt))}</div>`; prevUser = null; continue; }
+      const mine = user && m.userId === user.id;
+      const grouped = prevUser === m.userId && m.createdAt - prevTime < 5 * 60e3;
+      prevUser = m.userId; prevTime = m.createdAt;
+      let content = '';
+      if (m.kind === 'image' && m.image) content += `<button class="msg-img" data-img="${esc(m.image)}"><img src="${esc(m.image)}" alt="Photo from ${esc(m.name)}" loading="lazy"></button>`;
+      if (m.kind === 'card' && m.card) {
+        const c = m.card;
+        content += `<button class="msg-card" data-card="${esc(c.id)}">
+          ${c.image ? `<img src="${esc(c.image)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+          <span><b>${esc(c.name)}</b><small>${esc(c.set)}${c.number ? ` · #${esc(c.number)}` : ''}</small><em class="num">${c.price != null ? money(c.price) : 'No price yet'}</em></span>
+        </button>`;
+      }
+      if (m.body) content += `<div class="msg-text">${esc(m.body)}</div>`;
+      const canDelete = mine || isOwner;
+      html += `<div class="msg ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}" data-seq="${m.seq}">
+          ${mine ? '' : `<span class="msg-avatar">${grouped ? '' : nameInitial(m.name)}</span>`}
+          <div class="msg-col">
+            ${!mine && !grouped ? `<div class="msg-name">${esc(m.name)}</div>` : ''}
+            <div class="bubble ${m.kind}">${content}</div>
+            <div class="msg-meta">${esc(clock(m.createdAt))}${canDelete ? ` · <button class="msg-del" data-del="${m.seq}">Delete</button>` : ''}</div>
+          </div>
+        </div>`;
+    }
+    if (!openGroup.messages.length) html = '<div class="sys-msg">No messages yet — say hi 👋</div>';
+    box.innerHTML = html;
+    $('#loadOlder').hidden = openGroup.done || !openGroup.messages.length;
+    if (scrollToEnd || nearBottom) sc.scrollTop = sc.scrollHeight;
+    // Images change height as they load: keep pinned to the bottom.
+    if (scrollToEnd || nearBottom) $$('img', box).forEach((im) => im.addEventListener('load', () => { sc.scrollTop = sc.scrollHeight; }, { once: true }));
+  }
+
+  async function onChatClick(e) {
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      if (del.dataset.confirm !== '1') { del.dataset.confirm = '1'; del.textContent = 'Tap to confirm'; return; }
+      try {
+        await api(`/api/groups/${openGroup.id}/messages/${del.dataset.del}`, { method: 'DELETE', body: {} });
+        openGroup.messages = openGroup.messages.filter((m) => m.seq !== +del.dataset.del);
+        paintMessages(false);
+      } catch (err) { toast(err.message); }
+      return;
+    }
+    const img = e.target.closest('[data-img]');
+    if (img) { openLightbox(img.dataset.img); return; }
+    const card = e.target.closest('[data-card]');
+    if (card) {
+      try {
+        const { card: c } = await api(`/api/card/${encodeURIComponent(card.dataset.card)}`);
+        if (c) openCard({ card: c });
+      } catch { toast('Couldn’t load that card'); }
+    }
+  }
+
+  function openLightbox(src) {
+    const lb = document.createElement('div');
+    lb.className = 'lightbox';
+    lb.innerHTML = `<img src="${esc(src)}" alt=""><button class="sheet-close" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>`;
+    const close = () => { lb.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+    lb.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(lb);
+  }
+
+  let sending = false;
+  async function sendMessage(body) {
+    if (sending || !openGroup) return false;
+    sending = true;
+    const btn = $('#sendBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const { message } = await api(`/api/groups/${openGroup.id}/messages`, { method: 'POST', body });
+      if (message.seq > openGroup.lastSeq) {
+        openGroup.messages.push(message);
+        openGroup.lastSeq = message.seq;
+        if (!openGroup.firstSeq) openGroup.firstSeq = message.seq;
+      }
+      paintMessages(true);
+      refreshGroupList();
+      return true;
+    } catch (e) {
+      toast(e.message || 'Message not sent');
+      return false;
+    } finally {
+      sending = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function pickCardToShare() {
+    const items = state.items.filter((it) => it.card).slice().sort((a, b) => itemValue(b) - itemValue(a));
+    $('#sheetBody').innerHTML = `
+      <div class="picker">
+        <h3 id="sheetTitle">Share a card</h3>
+        <p class="muted">${items.length ? 'Pick a card from your collection to share with the group.' : 'Your collection is empty — scan or search for cards to share them here.'}</p>
+        <div class="picker-grid">
+          ${items.map((it) => `<button class="pcard" data-share="${esc(it.uid)}">
+              ${it.card.images?.small ? `<img src="${esc(it.card.images.small)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+              <span class="name">${esc(it.card.name)}</span>
+              <span class="sub">${esc(it.card.set?.name)} · #${esc(it.card.number)}</span>
+              <span class="p num">${money(itemPrice(it))}</span>
+            </button>`).join('')}
+        </div>
+      </div>`;
+    openSheetShell();
+    $$('[data-share]').forEach((b) => b.addEventListener('click', async () => {
+      const it = state.items.find((x) => x.uid === b.dataset.share);
+      closeSheet();
+      if (it) await sendMessage({ kind: 'card', cardId: it.cardId, variant: it.variant || null });
+    }));
+  }
+
+  /* ---- group leaderboard ---- */
+  async function renderGroupBoard() {
+    const g = openGroup;
+    $('#gBody').innerHTML = `<div class="g-board"><div class="podium" id="gPodium"></div><div class="lb-list" id="gList">${Array.from({ length: 3 }, () => '<div class="lb-row skeleton-row"></div>').join('')}</div>
+      <p class="note">Ranked by raw collection value, recalculated by PokéFolio from market prices. Everyone in the group can see members’ totals and top 5 cards.</p></div>`;
+    try {
+      g.board = await api(`/api/groups/${g.id}/leaderboard`);
+      if (openGroup !== g || g.tab !== 'board') return;
+      $('#gPodium').innerHTML = podiumHtml(g.board.entries, 'data-glb');
+      $('#gList').innerHTML = boardListHtml(g.board.entries.slice(3), 'data-glb');
+    } catch (e) {
+      $('#gList').innerHTML = `<p class="note">${esc(e.message || 'Couldn’t load the leaderboard.')}</p>`;
+    }
+  }
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-glb]');
+    if (b && openGroup?.board) openProfile(b.dataset.glb, openGroup.board.entries);
+  });
+
+  /* ---- members & settings ---- */
+  const inviteLink = (code) => `${location.origin}/?join=${encodeURIComponent(code)}`;
+  function renderMembers() {
+    const g = openGroup.details;
+    const owner = g.myRole === 'owner';
+    $('#gBody').innerHTML = `
+      <div class="g-members">
+        <div class="invite glass">
+          <span class="eyebrow">Invite friends</span>
+          <div class="invite-code num" id="inviteCode">${esc(g.inviteCode.replace(/(.{4})/, '$1-'))}</div>
+          <p class="muted">Anyone with this code or link can join. Share it with friends who have a PokéFolio account.</p>
+          <div class="invite-actions">
+            <button class="btn primary" id="copyInvite">Copy invite link</button>
+            ${navigator.share ? '<button class="btn" id="shareInvite">Share…</button>' : ''}
+            ${owner ? '<button class="btn ghost" id="resetInvite">New code</button>' : ''}
+          </div>
+        </div>
+        <h4 class="profile-sub">${g.members.length} member${g.members.length === 1 ? '' : 's'}</h4>
+        <div class="member-list">
+          ${g.members.map((m) => `<div class="member-row">
+              <span class="pod-avatar sm">${nameInitial(m.name)}</span>
+              <span class="lb-name">${esc(m.name)}${m.me ? ' <em>you</em>' : ''}<small>${m.role === 'owner' ? 'Owner' : 'Member'} · joined ${esc(new Date(m.joinedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</small></span>
+              ${owner && !m.me ? `<button class="btn ghost danger-text" data-kick="${esc(m.id)}" data-name="${esc(m.name)}">Remove</button>` : ''}
+            </div>`).join('')}
+        </div>
+        <h4 class="profile-sub">Settings</h4>
+        ${owner ? `
+          <form class="rename" id="renameForm">
+            <div class="field"><label for="renameInput">Group name</label><input id="renameInput" maxlength="40" value="${esc(g.name)}"></div>
+            <button class="btn" type="submit">Save</button>
+          </form>
+          <button class="btn danger block" id="deleteGroup">Delete group</button>
+          <p class="note">Deleting removes the chat, photos and leaderboard for everyone.</p>` : `
+          <button class="btn danger block" id="leaveGroup">Leave group</button>`}
+      </div>`;
+    $('#copyInvite').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(inviteLink(g.inviteCode)); toast('Invite link copied'); } catch { toast(inviteLink(g.inviteCode)); }
+    });
+    $('#shareInvite')?.addEventListener('click', () => navigator.share({ title: `Join ${g.name} on PokéFolio`, text: `Join my PokéFolio group “${g.name}” — code ${g.inviteCode}`, url: inviteLink(g.inviteCode) }).catch(() => {}));
+    $('#resetInvite')?.addEventListener('click', async () => {
+      try {
+        g.inviteCode = (await api(`/api/groups/${g.id}/invite`, { method: 'POST', body: {} })).inviteCode;
+        toast('New invite code — the old one no longer works');
+        renderMembers();
+      } catch (e) { toast(e.message); }
+    });
+    $$('[data-kick]').forEach((b) => b.addEventListener('click', async () => {
+      if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Confirm'; return; }
+      try {
+        await api(`/api/groups/${g.id}/members/${b.dataset.kick}`, { method: 'DELETE', body: {} });
+        g.members = g.members.filter((m) => m.id !== b.dataset.kick);
+        toast(`Removed ${b.dataset.name}`);
+        renderGroupPane();
+      } catch (e) { toast(e.message); }
+    }));
+    $('#renameForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        openGroup.details = (await api(`/api/groups/${g.id}`, { method: 'PATCH', body: { name: $('#renameInput').value } })).group;
+        toast('Group renamed');
+        renderGroupPane();
+        refreshGroupList();
+      } catch (err) { toast(err.message); }
+    });
+    const destructive = (btn, label, run) => btn?.addEventListener('click', async () => {
+      if (btn.dataset.confirm !== '1') { btn.dataset.confirm = '1'; btn.textContent = `Tap again to ${label}`; return; }
+      try { await run(); closeGroup(); await refreshGroupList(); renderGroupList(); } catch (e) { toast(e.message); }
+    });
+    destructive($('#deleteGroup'), 'delete for everyone', async () => { await api(`/api/groups/${g.id}`, { method: 'DELETE', body: {} }); toast('Group deleted'); });
+    destructive($('#leaveGroup'), 'leave', async () => { await api(`/api/groups/${g.id}/leave`, { method: 'POST', body: {} }); toast(`You left ${g.name}`); });
+  }
+
+  /* ---- create / join ---- */
+  function groupForm({ title, label, placeholder, button, value = '', maxlength = 40, onSubmit, hint = '' }) {
+    $('#sheetBody').innerHTML = `
+      <form class="g-form" id="gForm">
+        <h3 id="sheetTitle">${title}</h3>
+        ${hint ? `<p class="muted">${hint}</p>` : ''}
+        <div class="field"><label for="gFormInput">${label}</label><input id="gFormInput" maxlength="${maxlength}" placeholder="${esc(placeholder)}" value="${esc(value)}" autocomplete="off"></div>
+        <p class="auth-error" id="gFormError" hidden></p>
+        <button class="btn primary glow block" type="submit">${button}</button>
+      </form>`;
+    openSheetShell();
+    setTimeout(() => $('#gFormInput').focus(), 50);
+    $('#gForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('#gForm button[type=submit]');
+      btn.disabled = true;
+      try { await onSubmit($('#gFormInput').value.trim()); } catch (err) {
+        $('#gFormError').textContent = err.message || 'Something went wrong';
+        $('#gFormError').hidden = false;
+      } finally { btn.disabled = false; }
+    });
+  }
+  $('#newGroupBtn').addEventListener('click', () => groupForm({
+    title: 'New group', label: 'Group name', placeholder: 'e.g. Friday Night Pulls', button: 'Create group',
+    hint: 'You’ll get an invite code to share with friends.',
+    onSubmit: async (name) => {
+      const { group } = await api('/api/groups', { method: 'POST', body: { name } });
+      closeSheet();
+      await refreshGroupList();
+      openGroupById(group.id, 'members');
+    },
+  }));
+  function joinPrompt(code = '') {
+    groupForm({
+      title: 'Join a group', label: 'Invite code', placeholder: 'ABCD-EFGH', button: 'Join group', value: code, maxlength: 12,
+      hint: 'Ask a friend for their group’s invite code.',
+      onSubmit: async (c) => {
+        const { group, alreadyMember } = await api('/api/groups/join', { method: 'POST', body: { code: c } });
+        closeSheet();
+        toast(alreadyMember ? `You’re already in ${group.name}` : `Joined ${group.name}`);
+        await refreshGroupList();
+        go('groups');
+        openGroupById(group.id);
+      },
+    });
+  }
+  $('#joinGroupBtn').addEventListener('click', () => joinPrompt());
+
+  // Invite links: /?join=CODE — remembered across sign-in.
+  function handleInviteLink() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get('join');
+    if (code) {
+      try { sessionStorage.setItem(PENDING_JOIN, code); } catch { /* ignore */ }
+      history.replaceState(null, '', location.pathname);
+    }
+    let pending = null;
+    try { pending = sessionStorage.getItem(PENDING_JOIN); } catch { /* ignore */ }
+    if (pending && user) {
+      try { sessionStorage.removeItem(PENDING_JOIN); } catch { /* ignore */ }
+      go('groups');
+      joinPrompt(pending);
+    } else if (pending && !user && $('#auth').hidden === false) {
+      $('#authError').textContent = 'Sign in or create an account to join the group you were invited to.';
+      $('#authError').hidden = false;
+    }
+  }
 
   /* ================= Grader ================= */
   const gradeFiles = { front: null, back: null };
@@ -1488,6 +2041,6 @@
       user = null;
     }
     if (user || lsGet(GUEST_FLAG) === '1') enterApp();
-    else showAuth();
+    else { showAuth(); handleInviteLink(); }
   })();
 })();

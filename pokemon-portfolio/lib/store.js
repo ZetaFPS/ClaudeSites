@@ -14,7 +14,7 @@ const path = require('path');
 function fileStore(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'db.json');
-  let data = { users: {}, emails: {}, sessions: {}, portfolios: {} };
+  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, seq: 0 };
   try {
     data = { ...data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   } catch (e) {
@@ -61,6 +61,75 @@ function fileStore(dir) {
         .filter(([uid]) => data.users[uid])
         .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
     },
+
+    // --- groups ---
+    async createGroup(g) { data.groups[g.id] = { ...g }; data.members[g.id] = {}; data.messages[g.id] = []; save(); },
+    async getGroup(id) { return data.groups[id] || null; },
+    async getGroupByCode(code) { return Object.values(data.groups).find((g) => g.inviteCode === code) || null; },
+    async updateGroup(id, fields) { if (data.groups[id]) { Object.assign(data.groups[id], fields); save(); } return data.groups[id] || null; },
+    async deleteGroup(id) {
+      delete data.groups[id]; delete data.members[id]; delete data.messages[id];
+      for (const [k, img] of Object.entries(data.images)) if (img.groupId === id) delete data.images[k];
+      save();
+    },
+    async addMember(groupId, userId, role, joinedAt) {
+      (data.members[groupId] ||= {})[userId] ||= { role, joinedAt, lastRead: 0 };
+      save();
+    },
+    async removeMember(groupId, userId) { if (data.members[groupId]) { delete data.members[groupId][userId]; save(); } },
+    async getMember(groupId, userId) { return data.members[groupId]?.[userId] || null; },
+    async listMembers(groupId) {
+      return Object.entries(data.members[groupId] || {}).filter(([uid]) => data.users[uid])
+        .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
+    },
+    async countUserGroups(userId) { return Object.values(data.members).filter((m) => m[userId]).length; },
+    async listUserGroups(userId) {
+      const out = [];
+      for (const [gid, mem] of Object.entries(data.members)) {
+        const me = mem[userId];
+        const g = data.groups[gid];
+        if (!me || !g) continue;
+        const msgs = data.messages[gid] || [];
+        const last = msgs[msgs.length - 1] || null;
+        out.push({
+          ...g, role: me.role, lastRead: me.lastRead, memberCount: Object.keys(mem).length,
+          last: last && { ...last, name: data.users[last.userId]?.name || 'Someone' },
+          unread: msgs.filter((m) => m.seq > me.lastRead && m.userId !== userId).length,
+        });
+      }
+      return out;
+    },
+    async setLastRead(groupId, userId, seq) {
+      const m = data.members[groupId]?.[userId];
+      if (m && seq > m.lastRead) { m.lastRead = seq; save(); }
+    },
+    async addMessage(msg) {
+      const full = { ...msg, seq: ++data.seq };
+      (data.messages[msg.groupId] ||= []).push(full);
+      save();
+      return full;
+    },
+    async listMessages(groupId, { after = 0, before = null, limit = 50 } = {}) {
+      let msgs = (data.messages[groupId] || []).filter((m) => m.seq > after && (before == null || m.seq < before));
+      msgs = after ? msgs.slice(0, limit) : msgs.slice(-limit);
+      return msgs.map((m) => ({ ...m, name: data.users[m.userId]?.name || 'Former member' }));
+    },
+    async getMessage(groupId, seq) { return (data.messages[groupId] || []).find((m) => m.seq === seq) || null; },
+    async deleteMessage(groupId, seq) {
+      const arr = data.messages[groupId] || [];
+      const i = arr.findIndex((m) => m.seq === seq);
+      if (i >= 0) {
+        const [m] = arr.splice(i, 1);
+        if (m.imageId) delete data.images[m.imageId];
+        save();
+      }
+    },
+    async addImage(img) { data.images[img.id] = { groupId: img.groupId, mime: img.mime, b64: img.data.toString('base64'), createdAt: img.createdAt }; save(); },
+    async getImage(id) {
+      const i = data.images[id];
+      return i ? { id, groupId: i.groupId, mime: i.mime, data: Buffer.from(i.b64, 'base64') } : null;
+    },
+
     async close() { flushNow(); },
   };
 }
@@ -108,8 +177,47 @@ async function pgStore(url, legacyDir) {
       user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       doc        JSONB NOT NULL,
       updated_at BIGINT NOT NULL
-    );`);
+    );
+    CREATE TABLE IF NOT EXISTS groups (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      invite_code TEXT NOT NULL UNIQUE,
+      created_at  BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id  TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role      TEXT NOT NULL,
+      joined_at BIGINT NOT NULL,
+      last_read BIGINT NOT NULL DEFAULT 0,
+      PRIMARY KEY (group_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS group_members_user ON group_members (user_id);
+    CREATE TABLE IF NOT EXISTS group_images (
+      id         TEXT PRIMARY KEY,
+      group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      mime       TEXT NOT NULL,
+      data       BYTEA NOT NULL,
+      created_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS group_messages (
+      seq        BIGSERIAL PRIMARY KEY,
+      group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      user_id    TEXT NOT NULL,
+      kind       TEXT NOT NULL,
+      body       TEXT,
+      image_id   TEXT REFERENCES group_images(id) ON DELETE SET NULL,
+      card       JSONB,
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS group_messages_group_seq ON group_messages (group_id, seq);`);
 
+  const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at };
+  const toMessage = (r) => r && {
+    seq: +r.seq, groupId: r.group_id, userId: r.user_id, kind: r.kind, body: r.body, imageId: r.image_id, card: r.card,
+    createdAt: +r.created_at, name: r.name || 'Former member',
+  };
   const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false };
   const store = {
     kind: 'postgres',
@@ -147,6 +255,84 @@ async function pgStore(url, legacyDir) {
       const { rows } = await q(`SELECT u.id, u.name, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
       return rows.map((r) => ({ userId: r.id, name: r.name, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
     },
+
+    // --- groups ---
+    async createGroup(g) {
+      await q('INSERT INTO groups (id, name, owner_id, invite_code, created_at) VALUES ($1,$2,$3,$4,$5)', [g.id, g.name, g.ownerId, g.inviteCode, g.createdAt]);
+    },
+    async getGroup(id) { return toGroup((await q('SELECT * FROM groups WHERE id = $1', [id])).rows[0]); },
+    async getGroupByCode(code) { return toGroup((await q('SELECT * FROM groups WHERE invite_code = $1', [code])).rows[0]); },
+    async updateGroup(id, fields) {
+      const sets = [], vals = [];
+      if (fields.name != null) { vals.push(fields.name); sets.push(`name = $${vals.length}`); }
+      if (fields.inviteCode != null) { vals.push(fields.inviteCode); sets.push(`invite_code = $${vals.length}`); }
+      if (sets.length) { vals.push(id); await q(`UPDATE groups SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); }
+      return store.getGroup(id);
+    },
+    async deleteGroup(id) { await q('DELETE FROM groups WHERE id = $1', [id]); },
+    async addMember(groupId, userId, role, joinedAt) {
+      await q('INSERT INTO group_members (group_id, user_id, role, joined_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [groupId, userId, role, joinedAt]);
+    },
+    async removeMember(groupId, userId) { await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [groupId, userId]); },
+    async getMember(groupId, userId) {
+      const r = (await q('SELECT role, joined_at, last_read FROM group_members WHERE group_id = $1 AND user_id = $2', [groupId, userId])).rows[0];
+      return r ? { role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read } : null;
+    },
+    async listMembers(groupId) {
+      const { rows } = await q(`SELECT m.user_id, u.name, m.role, m.joined_at, m.last_read FROM group_members m JOIN users u ON u.id = m.user_id
+                                WHERE m.group_id = $1 ORDER BY m.joined_at`, [groupId]);
+      return rows.map((r) => ({ userId: r.user_id, name: r.name, role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read }));
+    },
+    async countUserGroups(userId) { return (await q('SELECT COUNT(*)::int AS n FROM group_members WHERE user_id = $1', [userId])).rows[0].n; },
+    async listUserGroups(userId) {
+      const { rows } = await q(`
+        SELECT g.*, m.role, m.last_read,
+          (SELECT COUNT(*)::int FROM group_members WHERE group_id = g.id) AS member_count,
+          (SELECT COUNT(*)::int FROM group_messages WHERE group_id = g.id AND seq > m.last_read AND user_id <> $1) AS unread,
+          (SELECT row_to_json(x) FROM (
+             SELECT gm.seq, gm.kind, gm.body, gm.user_id AS "userId", gm.created_at AS "createdAt", u.name
+             FROM group_messages gm LEFT JOIN users u ON u.id = gm.user_id
+             WHERE gm.group_id = g.id ORDER BY gm.seq DESC LIMIT 1) x) AS last
+        FROM groups g JOIN group_members m ON m.group_id = g.id
+        WHERE m.user_id = $1`, [userId]);
+      return rows.map((r) => ({ ...toGroup(r), role: r.role, lastRead: +r.last_read, memberCount: r.member_count, unread: r.unread,
+        last: r.last && { ...r.last, seq: +r.last.seq, createdAt: +r.last.createdAt, name: r.last.name || 'Former member' } }));
+    },
+    async setLastRead(groupId, userId, seq) {
+      await q('UPDATE group_members SET last_read = GREATEST(last_read, $3) WHERE group_id = $1 AND user_id = $2', [groupId, userId, seq]);
+    },
+    async addMessage(msg) {
+      const r = (await q(`INSERT INTO group_messages (group_id, user_id, kind, body, image_id, card, created_at)
+                          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING seq`,
+      [msg.groupId, msg.userId, msg.kind, msg.body ?? null, msg.imageId ?? null, msg.card ? JSON.stringify(msg.card) : null, msg.createdAt])).rows[0];
+      return { ...msg, seq: +r.seq };
+    },
+    async listMessages(groupId, { after = 0, before = null, limit = 50 } = {}) {
+      const vals = [groupId, after];
+      let where = 'gm.group_id = $1 AND gm.seq > $2';
+      if (before != null) { vals.push(before); where += ` AND gm.seq < $${vals.length}`; }
+      vals.push(limit);
+      const order = after ? 'ASC' : 'DESC';
+      const { rows } = await q(`SELECT gm.*, u.name FROM group_messages gm LEFT JOIN users u ON u.id = gm.user_id
+                                WHERE ${where} ORDER BY gm.seq ${order} LIMIT $${vals.length}`, vals);
+      const msgs = rows.map(toMessage);
+      return after ? msgs : msgs.reverse();
+    },
+    async getMessage(groupId, seq) {
+      return toMessage((await q('SELECT gm.*, u.name FROM group_messages gm LEFT JOIN users u ON u.id = gm.user_id WHERE gm.group_id = $1 AND gm.seq = $2', [groupId, seq])).rows[0]);
+    },
+    async deleteMessage(groupId, seq) {
+      const r = (await q('DELETE FROM group_messages WHERE group_id = $1 AND seq = $2 RETURNING image_id', [groupId, seq])).rows[0];
+      if (r?.image_id) await q('DELETE FROM group_images WHERE id = $1', [r.image_id]);
+    },
+    async addImage(img) {
+      await q('INSERT INTO group_images (id, group_id, mime, data, created_at) VALUES ($1,$2,$3,$4,$5)', [img.id, img.groupId, img.mime, img.data, img.createdAt]);
+    },
+    async getImage(id) {
+      const r = (await q('SELECT id, group_id, mime, data FROM group_images WHERE id = $1', [id])).rows[0];
+      return r ? { id: r.id, groupId: r.group_id, mime: r.mime, data: r.data } : null;
+    },
+
     async close() { await pool.end(); },
   };
 

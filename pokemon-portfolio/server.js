@@ -8,6 +8,7 @@ const { createStore } = require('./lib/store');
 const { createAuth, httpError } = require('./lib/auth');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
+const { createGroupsApi } = require('./lib/groups');
 
 const PORT = +process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -15,7 +16,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard; // set up in start()
+let store, auth, leaderboard, groupsApi; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -226,6 +227,9 @@ async function api(req, res, url) {
     return send(res, 200, await prices.fullPrices(m[1], url.searchParams.get('variant')));
   }
 
+  // --- groups: chat, photos, card shares, group leaderboard ---
+  if (await groupsApi(req, res, url)) return;
+
   // --- card image proxy (same-origin, so the scanner can compare pixels) ---
   if (pathname === '/api/img' && method === 'GET') {
     return proxyImage(res, url.searchParams.get('u'));
@@ -310,6 +314,7 @@ async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
+  groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
   server.listen(PORT, () => {
     console.log(`PokéFolio running at http://localhost:${PORT}`);
     console.log(`  accounts stored in: ${store.kind}`);

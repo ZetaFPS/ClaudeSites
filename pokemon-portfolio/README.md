@@ -27,6 +27,12 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   to see their 5 most valuable cards. Values are recalculated on the server from current market
   prices (saved prices can't be faked), and only display names, totals and top cards are public —
   never emails. Anyone can hide themselves under **Account → Show me on the leaderboard**.
+- **Groups** — create a group, name it and invite friends with an 8-character code or link.
+  Each group has a chat (text, photos, and cards shared from your collection with their live
+  price), its own members-only leaderboard (same server-side values as the global one), and a
+  members page. The owner can rename the group, reset the invite code, remove members or delete
+  it; members can delete their own messages and leave. Only members can read a group or load its
+  photos. Messages and photos are stored in the database, so they survive site updates too.
 - **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades:
   - *Centering*: border widths measured in mm on every side → ratios like `55/45` (L/R and T/B),
     front and back, checked against PSA's centering standards
@@ -108,7 +114,8 @@ server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/ca
 lib/auth.js      scrypt password hashing, 30-day HttpOnly session cookies
 lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
-lib/leaderboard.js  server-side collection values and rankings
+lib/leaderboard.js  server-side collection values and rankings (global + per group)
+lib/groups.js    groups API: invites, chat, photos, card shares, permissions
 public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, grader.js = pre-grading
 ```
 

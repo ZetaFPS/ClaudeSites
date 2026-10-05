@@ -112,7 +112,19 @@ function createLeaderboard(store, prices) {
     };
   }
 
-  return { view, markDirty, invalidate };
+  // Leaderboard limited to a set of users (a group). Everyone in the group is included —
+  // joining a group means sharing your collection value with its members.
+  async function forUsers(members) {
+    const lb = await get();
+    const entries = members.map((m) => {
+      const e = lb.all.get(m.userId);
+      return { id: m.userId, name: m.name, value: e?.value || 0, cards: e?.cards || 0, top: e?.top || [] };
+    }).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
+    entries.forEach((e, i) => { e.rank = i + 1; });
+    return { computedAt: lb.computedAt, total: entries.length, entries };
+  }
+
+  return { view, forUsers, markDirty, invalidate };
 }
 
 module.exports = { createLeaderboard };
