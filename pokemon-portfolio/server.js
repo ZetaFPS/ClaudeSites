@@ -106,6 +106,16 @@ async function api(req, res, url) {
     if (!/^application\/json/i.test(req.headers['content-type'] || '')) throw httpError(415, 'Expected JSON.');
   }
 
+  // --- status: is account storage permanent? ---
+  if (pathname === '/api/health' && method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      storage: store.kind === 'postgres' ? 'postgres' : 'file',
+      persistent: storagePersistent(),
+      hosted: isHosted(),
+    });
+  }
+
   // --- accounts ---
   if (pathname === '/api/auth/me' && method === 'GET') {
     const user = await auth.userForToken(cookies(req)[COOKIE]);
@@ -290,6 +300,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Running on a cloud host (where the local disk is usually wiped on each deploy)?
+const isHosted = () => !!(process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
+  || process.env.K_SERVICE || process.env.DYNO || process.env.VERCEL || process.env.NODE_ENV === 'production');
+// Postgres is permanent. A file is only permanent on a real persistent disk (opt-in flag).
+const storagePersistent = () => store.kind === 'postgres' || process.env.PERSISTENT_DISK === '1' || !isHosted();
+
 async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
   auth = createAuth(store);
@@ -297,8 +313,10 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`PokéFolio running at http://localhost:${PORT}`);
     console.log(`  accounts stored in: ${store.kind}`);
-    if (store.kind !== 'postgres' && process.env.RENDER) {
-      console.warn('  WARNING: no DATABASE_URL — accounts are saved on this server\'s disk and will be lost on the next deploy.');
+    if (!storagePersistent()) {
+      console.warn('\n  ⚠️  WARNING: DATABASE_URL is not set. Accounts are being saved on this server\'s disk,');
+      console.warn('  ⚠️  which this host wipes on every deploy — every account will be DELETED on the next update.');
+      console.warn('  ⚠️  Fix: add a DATABASE_URL environment variable (see README → "Keeping accounts").\n');
     }
     console.log(`  graded prices: ${process.env.PRICECHARTING_TOKEN ? 'PriceCharting API (token set)' : 'PriceCharting public pages (set PRICECHARTING_TOKEN to use the official API)'}`);
   });

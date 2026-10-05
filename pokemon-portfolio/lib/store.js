@@ -71,12 +71,22 @@ async function pgStore(url, legacyDir) {
   try { pg = require('pg'); } catch {
     throw new Error('DATABASE_URL is set but the "pg" package is missing — run `npm install`.');
   }
-  const local = /@(localhost|127\.0\.0\.1)(:|\/)/.test(url) || /sslmode=disable/.test(url);
-  const pool = new pg.Pool({
-    connectionString: url,
-    max: 5,
-    ssl: local || process.env.PGSSL === 'off' ? false : { rejectUnauthorized: false },
-  });
+  const { connectionString, ssl } = cleanDatabaseUrl(url);
+  const pool = new pg.Pool({ connectionString, ssl, max: 5, connectionTimeoutMillis: 15000, idleTimeoutMillis: 30000 });
+  // Idle connections can be dropped by the database host; don't let that crash the server.
+  pool.on('error', (e) => console.error('Postgres connection error:', e.message));
+
+  // Free databases (e.g. Neon) sleep when idle and take a few seconds to wake: retry.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await pool.query('SELECT 1');
+      break;
+    } catch (e) {
+      if (attempt >= 6) throw new Error(`Could not connect to the database in DATABASE_URL: ${e.message}`);
+      console.warn(`Database not reachable yet (${e.message}) — retrying (${attempt}/5)…`);
+      await new Promise((r) => setTimeout(r, Math.min(8000, 1000 * 2 ** (attempt - 1))));
+    }
+  }
   const q = (text, params) => pool.query(text, params);
 
   await q(`
@@ -166,8 +176,27 @@ async function pgStore(url, legacyDir) {
   return store;
 }
 
+// Accept the connection string however it was pasted: surrounding quotes or a leading
+// `psql '…'` (Neon's dashboard shows it that way), and parameters node-postgres doesn't need.
+function cleanDatabaseUrl(raw) {
+  let url = String(raw).trim().replace(/^psql\s+/, '').replace(/^['"]|['"]$/g, '').trim();
+  let sslmode = null;
+  try {
+    const u = new URL(url);
+    if (!/^postgres(ql)?:$/.test(u.protocol)) throw new Error('bad protocol');
+    sslmode = u.searchParams.get('sslmode');
+    for (const k of ['sslmode', 'channel_binding', 'sslrootcert', 'sslcert', 'sslkey']) u.searchParams.delete(k);
+    url = u.toString();
+  } catch {
+    throw new Error('DATABASE_URL isn’t a valid connection string — it should start with postgres:// or postgresql://');
+  }
+  const local = /@(localhost|127\.0\.0\.1)(:|\/)/.test(url);
+  const ssl = sslmode === 'disable' || process.env.PGSSL === 'off' || (local && sslmode == null) ? false : { rejectUnauthorized: false };
+  return { connectionString: url, ssl };
+}
+
 async function createStore({ databaseUrl, dataDir }) {
   return databaseUrl ? pgStore(databaseUrl, dataDir) : fileStore(dataDir);
 }
 
-module.exports = { createStore };
+module.exports = { createStore, cleanDatabaseUrl };

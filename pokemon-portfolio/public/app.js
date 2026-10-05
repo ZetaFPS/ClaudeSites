@@ -203,6 +203,7 @@
           <div class="info"><div class="k">Raw value</div><div class="v num">${money(t.value)}</div></div>
           <div class="info"><div class="k">Member since</div><div class="v">${new Date(user.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</div></div>
           <div class="info"><div class="k">Sync</div><div class="v">${esc($('#syncState').textContent || '—')}</div></div>
+          <div class="info" style="grid-column:1/-1"><div class="k">Account storage</div><div class="v">${storageInfo?.persistent === false ? '<span class="down">⚠ Temporary — erased when the site updates</span>' : storageInfo?.storage === 'postgres' ? '<span class="up">✓ Database — kept across updates</span>' : 'Saved on this server'}</div></div>
         </div>
         <label class="switch-row glass">
           <span><b>Show me on the leaderboard</b><small>Shows your display name, total value and top 5 cards. Never your email.</small></span>
@@ -1472,6 +1473,14 @@
   }
 
   /* ================= Boot ================= */
+  // Warn loudly if this deployment would lose accounts on the next update.
+  let storageInfo = null;
+  api('/api/health').then((h) => {
+    storageInfo = h;
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (!h.persistent && !local) $$('.storage-warn').forEach((el) => { el.hidden = false; });
+  }).catch(() => {});
+
   (async () => {
     try {
       user = (await api('/api/auth/me')).user;

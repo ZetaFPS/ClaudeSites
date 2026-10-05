@@ -18,6 +18,10 @@
   <!-- AUTH -->
   <section class="auth" id="auth" hidden>
     <div class="auth-card glass">
+      <div class="storage-warn" role="alert" hidden>
+        <b>⚠ Accounts on this site aren’t saved permanently yet.</b>
+        <span>The site isn’t connected to a database, so every account is erased whenever the site is updated. Site owner: add a <code>DATABASE_URL</code> setting on your host (see the README section “Keeping accounts when you update the site”).</span>
+      </div>
       <div class="logo-mark big" aria-hidden="true"></div>
       <h1 class="auth-title">PokéFolio</h1>
       <p class="auth-sub">Scan. Track. Know what your cards are worth.</p>
@@ -58,6 +62,10 @@
     </header>
 
     <main>
+      <div class="storage-warn" role="alert" hidden>
+        <b>⚠ Accounts on this site aren’t saved permanently yet.</b>
+        <span>The site isn’t connected to a database, so every account is erased whenever the site is updated. Site owner: add a <code>DATABASE_URL</code> setting on your host (see the README section “Keeping accounts when you update the site”).</span>
+      </div>
       <!-- PORTFOLIO -->
       <section class="view active" id="view-portfolio" aria-label="Portfolio">
         <div class="dash-top">

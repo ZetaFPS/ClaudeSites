@@ -53,7 +53,13 @@ One-time setup with a free [Neon](https://neon.tech) database (Supabase or any P
    (looks like `postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`).
 2. In your host's dashboard (Render: your service → **Environment**), add
    `DATABASE_URL` = that connection string, and save. The site redeploys.
-3. Check the deploy log for `accounts stored in: postgres`.
+3. Check it worked: open `https://<your-site>/api/health` — it should say `"storage":"postgres"`
+   and `"persistent":true`. (The deploy log also prints `accounts stored in: postgres`.)
+
+Paste the connection string exactly as Neon shows it — a leading `psql '…'`, quotes and extra
+parameters are cleaned up automatically. If the database is asleep when the site starts, the server
+waits and retries. Until a database is connected, the hosted site shows a red warning on the sign-in
+screen saying accounts will be erased on the next update.
 
 Tables are created automatically. If the server still has a `data/db.json` from an earlier
 version when it first connects, those accounts and portfolios are imported into Postgres.
