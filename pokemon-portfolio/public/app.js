@@ -303,11 +303,12 @@
   }
 
   /* ================= Card search ================= */
-  async function findCards({ name, number, total }) {
+  async function findCards({ name, number, total, setCode }) {
     const params = new URLSearchParams();
     if (name) params.set('name', name);
     if (number) params.set('number', number);
     if (total) params.set('total', total);
+    if (setCode) params.set('setCode', setCode);
     return (await api(`/api/search?${params}`)).data || [];
   }
   function normNumber(n) { return /^\d+$/.test(n) ? String(+n) : n.toUpperCase(); }
@@ -538,7 +539,7 @@
   }
 
   // Render a result grid. `scores` (Map id -> 0…1) adds visual-match badges.
-  function renderResults(cards, headText, { scores = null, best = null } = {}) {
+  function renderResults(cards, headText, { scores = null, best = null, hits = null } = {}) {
     lastResults = cards;
     const head = $('#resultsHead'), grid = $('#results');
     head.hidden = false;
@@ -553,6 +554,7 @@
           <img src="${esc(proxied(c.images?.small))}" alt="" loading="lazy">
           <div class="name">${esc(c.name)}</div>
           <div class="sub">${esc(c.set?.name)} · #${esc(c.number)}</div>
+          ${hits?.get(c.id)?.length ? `<div class="hits">${hits.get(c.id).map((h) => `<span>✓ ${esc(h)}</span>`).join('')}</div>` : ''}
           <div class="p num" data-price="${i}">${resultPriceHtml(c)}</div>
         </button>`;
     }).join('');
@@ -705,16 +707,61 @@
     const promo = t.match(/\b(SWSH|SM|XY|BW|SVP|SV|HGSS|DP)\s?(\d{1,3})\b/i);
     if (promo) return { number: promoNumber(promo[1], promo[2]), total: null };
     return { number: null, total: null };
+  }  // HP printed top-right: "HP 60", "60 HP", "HP60".
+  function parseHP(text) {
+    const m = text.match(/\bHP\s*([1-9]\d{1,2})\b/i) || text.match(/\b([1-9]\d{1,2})\s*HP\b/i);
+    return m && +m[1] >= 10 && +m[1] <= 400 ? m[1] : null;
+  }
+  // Set code printed bottom-left on modern cards: "PAL EN", "SVI EN", "G OBF EN".
+  const NOT_SET_CODES = new Set(['HP', 'EN', 'ILLUS', 'THE', 'AND', 'GX', 'EX', 'VMAX', 'VSTAR']);
+  function parseSetCode(text) {
+    for (const m of text.toUpperCase().matchAll(/\b([A-Z][A-Z0-9]{1,3})\s*[•·.\-]?\s*EN\b/g)) {
+      if (!NOT_SET_CODES.has(m[1])) return m[1];
+    }
+    return null;
+  }
+  // Illustrator credit: "Illus. Mitsuhiro Arita".
+  function parseArtist(text) {
+    const m = text.match(/[Il1|]llus(?:trator)?\.?\s*:?\s*([A-Za-z0-9][A-Za-z0-9.'\-]*(?:\s+[A-Za-z][A-Za-z.'\-]*){0,3})/);
+    if (!m) return null;
+    const words = m[1].split(/\s+/).filter((w) => /[a-z]/i.test(w) && !/^(EN|HP)$/i.test(w));
+    return words.length ? words.slice(0, 3).join(' ') : null;
   }
 
-  // Cards that might be the scanned one: exact text match plus same-name cards (in case the
-  // number was misread) and same-number cards (in case the name was).
-  async function gatherCandidates({ name, number, total }) {
+  // Loose text matching that tolerates one wrong letter per word (typical OCR slips).
+  const textWords = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+  function nearWord(w, set) {
+    if (set.has(w)) return true;
+    if (w.length < 5) return false;
+    for (const o of set) {
+      if (Math.abs(o.length - w.length) > 1) continue;
+      let i = 0, j = 0, edits = 0;
+      while (i < w.length && j < o.length && edits <= 1) {
+        if (w[i] === o[j]) { i++; j++; continue; }
+        edits++;
+        if (w.length > o.length) i++; else if (o.length > w.length) j++; else { i++; j++; }
+      }
+      if (edits + (w.length - i) + (o.length - j) <= 1) return true;
+    }
+    return false;
+  }
+  // Does `phrase` appear in the OCR'd text? Returns the fraction of its words found.
+  function phraseFound(phrase, ocrSet) {
+    const ws = textWords(phrase).filter((w) => w.length >= 3);
+    if (!ws.length) return 0;
+    return ws.filter((w) => nearWord(w, ocrSet)).length / ws.length;
+  }
+
+
+  // Cards that might be the scanned one: exact text match plus looser searches, in case the
+  // number, name or set code was misread.
+  async function gatherCandidates({ name, number, total, setCode }) {
     const tries = [];
+    if (setCode && number) tries.push({ name, number, setCode }, { number, setCode });
     if (name) tries.push({ name, number, total });
     if (name && number) tries.push({ name });
     if (number && total) tries.push({ number, total });
-    if (!name && number) tries.push({ number });
+    if (!name && number && !setCode) tries.push({ number });
     const results = await Promise.allSettled(tries.map((t) => findCards(t)));
     if (results.every((r) => r.status === 'rejected')) throw results[0].reason;
     const seen = new Map();
@@ -722,15 +769,39 @@
     return [...seen.values()].slice(0, 60);
   }
 
-  // Visual similarity blended with what the text said.
-  function blendedScore(card, visual, { name, number, total }) {
-    let s = visual;
+  // How well a card's printed details agree with what the scanner read. Returns
+  // { score: 0…1 | null, hits: [labels] } — null when nothing comparable was read.
+  function traitMatch(card, t) {
+    let got = 0, max = 0;
+    const hits = [];
     const norm = (x) => String(x || '').toLowerCase().replace(/^0+(?=\d)/, '');
-    // Text is only a tie-breaker: OCR misreads numbers often, artwork doesn't lie.
-    if (number && norm(card.number) === norm(number)) s += 0.025;
-    if (total && +card.set?.printedTotal === +total) s += 0.01;
-    if (name && card.name.toLowerCase().startsWith(name.toLowerCase())) s += 0.01;
-    return s;
+    const add = (weight, fraction, label) => {
+      max += weight;
+      got += weight * fraction;
+      if (fraction >= 0.5 && label) hits.push(label);
+    };
+    if (t.number) add(0.28, norm(card.number) === norm(t.number) ? 1 : 0, `#${card.number}`);
+    if (t.total) add(0.10, +card.set?.printedTotal === +t.total ? 1 : 0, `/${card.set?.printedTotal}`);
+    if (t.setCode) add(0.20, String(card.set?.ptcgoCode || '').toUpperCase() === t.setCode ? 1 : 0, card.set?.ptcgoCode);
+    if (t.hp && card.hp) add(0.10, String(card.hp) === t.hp ? 1 : 0, `HP ${card.hp}`);
+    if (t.ocrSet && card.artist) {
+      const f = Math.max(phraseFound(card.artist, t.ocrSet), t.artist ? phraseFound(t.artist, new Set(textWords(card.artist))) : 0);
+      add(0.12, f, card.artist);
+    }
+    const moves = [...(card.abilities || []), ...(card.attacks || [])].map((a) => a.name).filter(Boolean);
+    if (t.ocrSet && moves.length) {
+      const found = moves.map((m) => phraseFound(m, t.ocrSet));
+      add(0.20, found.reduce((a, b) => a + b, 0) / moves.length, found.some((f) => f >= 0.5) ? moves[found.indexOf(Math.max(...found))] : null);
+    }
+    return { score: max ? got / max : null, hits };
+  }
+
+  // Final ranking score: artwork similarity leads; printed details refine it (and decide
+  // between reprints that share the same artwork).
+  function combinedScore(visual, trait) {
+    if (visual == null) return trait ?? 0;
+    if (trait == null) return visual;
+    return 0.8 * visual + 0.2 * trait;
   }
 
   async function scanCanvas(card, { wholeImage = false } = {}) {
@@ -740,51 +811,69 @@
     status.textContent = '› reading card…';
     scanner.classList.add('busy');
     $('#shutterBtn').disabled = true;
-    // Keep a private copy: the capture canvas is reused by the next scan.
-    const photo = document.createElement('canvas');
+    // Keep a private copy: the capture canvas is reused by the next scan. For an uncropped
+    // photo, crop to the card first so the name/number/HP regions line up.
+    let photo = document.createElement('canvas');
     photo.width = card.width; photo.height = card.height;
     photo.getContext('2d').drawImage(card, 0, 0);
+    if (wholeImage && window.CardVision?.detectCard) {
+      const box = window.CardVision.detectCard(photo);
+      if (box) {
+        const cropped = document.createElement('canvas');
+        cropped.width = Math.round(box.w); cropped.height = Math.round(box.h);
+        cropped.getContext('2d').drawImage(photo, box.x, box.y, box.w, box.h, 0, 0, cropped.width, cropped.height);
+        photo = cropped;
+        wholeImage = false;
+      }
+    }
     try {
-      let name = '', number = null, total = null;
+      const t = { name: '', number: null, total: null, hp: null, setCode: null, artist: null, ocrSet: null };
       try {
         const worker = await getOcrWorker();
         const read = async (canvas, psm) => {
           await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
           return (await worker.recognize(canvas)).data.text || '';
         };
+        let bottom = '';
         if (!wholeImage) {
-          name = parseName(await read(band(photo, 0.04, 0.025, 0.74, 0.12), 7));
-          ({ number, total } = parseNumber(await read(band(photo, 0.02, 0.86, 0.98, 0.985, 2.6), 11)));
+          t.name = parseName(await read(band(photo, 0.04, 0.025, 0.74, 0.12), 7));
+          status.textContent = '› reading HP & set details…';
+          t.hp = parseHP(await read(band(photo, 0.55, 0.02, 0.98, 0.12), 7));
+          bottom = await read(band(photo, 0.02, 0.86, 0.98, 0.985, 2.6), 11);
+          ({ number: t.number, total: t.total } = parseNumber(bottom));
         }
-        if (!name || !number) {
-          const full = await read(band(photo, 0, 0, 1, 1, 1.4), 3);
-          if (!name) name = parseName(full);
-          if (!number) ({ number, total } = parseNumber(full));
-        }
+        status.textContent = '› reading attacks & illustrator…';
+        const full = await read(band(photo, 0, 0, 1, 1, 1.4), 3);
+        const all = `${bottom}\n${full}`;
+        if (!t.name) t.name = parseName(full);
+        if (!t.number) ({ number: t.number, total: t.total } = parseNumber(full));
+        t.hp = t.hp || parseHP(full);
+        t.setCode = parseSetCode(all);
+        t.artist = parseArtist(all);
+        t.ocrSet = new Set(textWords(all));
       } catch (e) {
         status.textContent = 'Text reader failed to load — search by name below.';
         return;
       }
-      if (!name && !number) {
+      if (!t.name && !t.number) {
         status.textContent = 'Couldn’t read that card. Fill the frame, avoid glare, hold steady — or search below.';
         return;
       }
-      const parsed = { name, number, total };
-      const label = [name, number && (total ? `${number}/${total}` : `#${number}`)].filter(Boolean).join(' ');
-      status.textContent = `› read “${label}” · finding candidates…`;
+      const label = [t.name, t.number && (t.total ? `${t.number}/${t.total}` : `#${t.number}`)].filter(Boolean).join(' ');
+      const readout = [label, t.setCode, t.hp && `HP ${t.hp}`, t.artist && `Illus. ${t.artist}`].filter(Boolean).join(' · ');
+      status.textContent = `› read: ${readout} · finding candidates…`;
       showSearching(label);
       let cards;
-      try { cards = await gatherCandidates(parsed); } catch (e) { showSearchError(e); status.textContent = ''; return; }
+      try { cards = await gatherCandidates(t); } catch (e) { showSearchError(e); status.textContent = ''; return; }
       if (!cards.length) {
         renderResults([], `No cards found for ${label}. Try again, or search by name below.`);
-        status.textContent = `› read “${label}”`;
+        status.textContent = `› read: ${readout}`;
         return;
       }
 
       // Image recognition: compare the photo with every candidate's artwork.
       const scores = new Map();
       renderResults(cards, `Comparing your photo with ${cards.length} card${cards.length === 1 ? '' : 's'}…`, { scores });
-      status.textContent = '› matching artwork…';
       let visual = new Map();
       if (window.CardVision) {
         visual = await window.CardVision.rank(photo, cards.map((c) => ({ key: c.id, url: proxied(c.images?.small) })), {
@@ -792,21 +881,23 @@
           onProgress: (d, n) => { status.textContent = `› matching artwork ${d}/${n}`; },
         }).catch(() => new Map());
       }
-      const ranked = cards
-        .map((c) => ({ c, v: visual.get(c.id), s: blendedScore(c, visual.get(c.id) ?? 0, parsed) }))
-        .sort((a, b) => b.s - a.s);
-      for (const r of ranked) if (r.v != null) scores.set(r.c.id, r.v);
+      const ranked = cards.map((c) => {
+        const v = visual.get(c.id) ?? null;
+        const tm = traitMatch(c, t);
+        return { c, v, hits: tm.hits, s: combinedScore(v, tm.score) };
+      }).sort((a, b) => b.s - a.s);
+      for (const r of ranked) scores.set(r.c.id, r.s);
       const top = ranked[0], second = ranked[1];
-      const best = visual.size ? top.c.id : null;
+      const sameArt = second && top.v != null && second.v != null && Math.abs(top.v - second.v) < 0.03 && top.s - second.s < 0.05;
       renderResults(ranked.map((r) => r.c),
-        visual.size
-          ? `${cards.length} candidate${cards.length === 1 ? '' : 's'} for “${label}”, ranked by how closely the artwork matches your photo`
-          : `${cards.length} match${cards.length === 1 ? '' : 'es'} for “${label}” — tap a card to add it`,
-        { scores: visual.size ? scores : null, best });
-      status.textContent = visual.size ? `› best match: ${top.c.name} · ${top.c.set?.name} #${top.c.number}` : `› read “${label}”`;
+        sameArt
+          ? `Several cards share this artwork (reprints) — check the set number at the bottom of your card and pick the one that matches`
+          : `${cards.length} candidate${cards.length === 1 ? '' : 's'}, ranked by artwork match${visual.size ? '' : ' (unavailable)'} and printed details`,
+        { scores, best: top.c.id, hits: new Map(ranked.map((r) => [r.c.id, r.hits])) });
+      status.textContent = `› best match: ${top.c.name} · ${top.c.set?.name} #${top.c.number}`;
 
       // Confident? Jump straight to the card.
-      const confident = cards.length === 1 || (top.v != null && top.v >= 0.62 && (!second || top.s - second.s >= 0.06));
+      const confident = cards.length === 1 || (top.s >= 0.62 && (!second || top.s - second.s >= 0.05));
       if (confident) openCard({ card: top.c });
       else $('#resultsHead').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } finally {

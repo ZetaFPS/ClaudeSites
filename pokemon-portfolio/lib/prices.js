@@ -217,7 +217,7 @@ function getCard(id) {
   });
 }
 
-function buildQueries({ name, number, total }) {
+function buildQueries({ name, number, total, setCode }) {
   const clean = String(name || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const ws = clean.replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 4);
   const nameQ = ws.map((w) => `name:${w}`).join(' ');
@@ -225,7 +225,11 @@ function buildQueries({ name, number, total }) {
   const nameWild = ws.length ? ws.slice(0, -1).map((w) => `name:${w}`).concat(`name:${ws.at(-1)}*`).join(' ') : '';
   const num = number && /^[a-z0-9]{1,12}$/i.test(number) ? `number:${number}` : '';
   const tot = total && /^\d{1,4}$/.test(total) ? `set.printedTotal:${total}` : '';
+  const code = setCode && /^[A-Z0-9]{2,5}$/i.test(setCode) ? `set.ptcgoCode:${setCode.toUpperCase()}` : '';
   const qs = [];
+  // Set code + number pins down an exact card on modern sets ("PAL EN 123/193").
+  if (code && num) qs.push(nameQ ? `${nameQ} ${num} ${code}` : `${num} ${code}`);
+  if (code && num && nameQ) qs.push(`${num} ${code}`);
   if (nameQ && num && tot) qs.push(`${nameQ} ${num} ${tot}`);
   if (nameQ && num) qs.push(`${nameQ} ${num}`);
   if (num && tot) qs.push(`${num} ${tot}`);

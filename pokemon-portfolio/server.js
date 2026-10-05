@@ -14,8 +14,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-const store = createStore(DATA_DIR);
-const auth = createAuth(store);
+let store, auth; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -91,8 +90,8 @@ function checkOrigin(req) {
   if (host !== req.headers.host) throw httpError(403, 'Cross-site request blocked.');
 }
 
-function requireUser(req) {
-  const user = auth.userForToken(cookies(req)[COOKIE]);
+async function requireUser(req) {
+  const user = await auth.userForToken(cookies(req)[COOKIE]);
   if (!user) throw httpError(401, 'Please sign in.');
   return user;
 }
@@ -108,39 +107,38 @@ async function api(req, res, url) {
 
   // --- accounts ---
   if (pathname === '/api/auth/me' && method === 'GET') {
-    const user = auth.userForToken(cookies(req)[COOKIE]);
+    const user = await auth.userForToken(cookies(req)[COOKIE]);
     return send(res, 200, { user: user ? auth.publicUser(user) : null });
   }
   if (pathname === '/api/auth/signup' && method === 'POST') {
     limitAuth(req);
-    const user = auth.signup(await readBody(req));
-    const s = auth.createSession(user.id);
+    const user = await auth.signup(await readBody(req));
+    const s = await auth.createSession(user.id);
     return send(res, 201, { user: auth.publicUser(user) }, { 'Set-Cookie': sessionCookie(req, s.token, s.maxAge) });
   }
   if (pathname === '/api/auth/login' && method === 'POST') {
     limitAuth(req);
-    const user = auth.login(await readBody(req));
-    const s = auth.createSession(user.id);
+    const user = await auth.login(await readBody(req));
+    const s = await auth.createSession(user.id);
     return send(res, 200, { user: auth.publicUser(user) }, { 'Set-Cookie': sessionCookie(req, s.token, s.maxAge) });
   }
   if (pathname === '/api/auth/logout' && method === 'POST') {
-    auth.destroySession(cookies(req)[COOKIE]);
+    await auth.destroySession(cookies(req)[COOKIE]);
     return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(req, '', 0) });
   }
 
   // --- portfolio sync ---
   if (pathname === '/api/portfolio') {
-    const user = requireUser(req);
+    const user = await requireUser(req);
     if (method === 'GET') {
-      return send(res, 200, store.data.portfolios[user.id] || { items: [], history: {}, pricesUpdatedAt: 0, updatedAt: 0 });
+      return send(res, 200, (await store.getPortfolio(user.id)) || { items: [], history: {}, pricesUpdatedAt: 0, updatedAt: 0 });
     }
     if (method === 'PUT') {
       const body = await readBody(req);
       if (!Array.isArray(body.items) || body.items.length > 10000) throw httpError(400, 'Invalid portfolio.');
       const history = body.history && typeof body.history === 'object' && !Array.isArray(body.history) ? body.history : {};
       const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
-      store.data.portfolios[user.id] = doc;
-      store.save();
+      await store.putPortfolio(user.id, doc);
       return send(res, 200, { ok: true, updatedAt: doc.updatedAt });
     }
   }
@@ -153,6 +151,7 @@ async function api(req, res, url) {
       name: (p.get('name') || '').slice(0, 80),
       number: (p.get('number') || '').slice(0, 12) || null,
       total: (p.get('total') || '').slice(0, 4) || null,
+      setCode: (p.get('setCode') || '').slice(0, 5) || null,
     };
     if (!parsed.name && !parsed.number) throw httpError(400, 'Enter a card name or number.');
     return send(res, 200, await prices.search(parsed));
@@ -259,8 +258,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`PokéFolio running at http://localhost:${PORT}`);
-  console.log(`  data dir: ${DATA_DIR}`);
-  console.log(`  graded prices: ${process.env.PRICECHARTING_TOKEN ? 'PriceCharting API (token set)' : 'PriceCharting public pages (set PRICECHARTING_TOKEN to use the official API)'}`);
+async function start() {
+  store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
+  auth = createAuth(store);
+  server.listen(PORT, () => {
+    console.log(`PokéFolio running at http://localhost:${PORT}`);
+    console.log(`  accounts stored in: ${store.kind}`);
+    if (store.kind !== 'postgres' && process.env.RENDER) {
+      console.warn('  WARNING: no DATABASE_URL — accounts are saved on this server\'s disk and will be lost on the next deploy.');
+    }
+    console.log(`  graded prices: ${process.env.PRICECHARTING_TOKEN ? 'PriceCharting API (token set)' : 'PriceCharting public pages (set PRICECHARTING_TOKEN to use the official API)'}`);
+  });
+  const shutdown = async () => { server.close(); await store.close().catch(() => {}); process.exit(0); };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+start().catch((e) => {
+  console.error('Failed to start:', e.message);
+  process.exit(1);
 });

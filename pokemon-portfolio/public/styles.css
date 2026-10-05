@@ -590,3 +590,5 @@ img { display: block; }
   .find-hint p { margin: 0; max-width: 440px; font-size: 14px; line-height: 1.6; }
   .reticle.small { width: 56px; height: 56px; }
 }
+.result .hits { order: 2; display: flex; flex-wrap: wrap; gap: 4px; }
+.result .hits span { font-size: 10px; font-weight: 600; color: var(--up); background: rgba(52, 245, 166, .08); border: 1px solid rgba(52, 245, 166, .2); border-radius: 6px; padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

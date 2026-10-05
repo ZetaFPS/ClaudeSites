@@ -10,6 +10,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   was misread — then **image recognition** compares your photo with each candidate's artwork and puts
   the closest visual match first (with a match %). Confident matches open automatically. Uncropped
   photos work too: the card is located in the picture first. (`public/vision.js`, no model download.)
+  The scanner also reads the card's **set code** (e.g. `PAL EN`), **HP**, **illustrator** and
+  **attack/ability names**, and checks each candidate against them — shown as ✓ chips on the
+  results. Artwork similarity leads the ranking; printed details refine it and tell apart reprints
+  that share the same artwork.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
@@ -24,12 +28,32 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,
   TCGplayer prices by printing and Cardmarket (EUR) prices.
 
+## Keeping accounts when you update the site
+
+Accounts and collections are stored in **PostgreSQL** whenever `DATABASE_URL` is set. The database
+lives outside the web server, so redeploys, restarts and host changes never touch it. Without
+`DATABASE_URL` the app falls back to a file on the server's disk — fine on your own computer, but
+most hosts (e.g. Render's free tier) wipe that disk on every deploy.
+
+One-time setup with a free [Neon](https://neon.tech) database (Supabase or any Postgres works too):
+
+1. Create a Neon account → **New project** → copy the connection string
+   (looks like `postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`).
+2. In your host's dashboard (Render: your service → **Environment**), add
+   `DATABASE_URL` = that connection string, and save. The site redeploys.
+3. Check the deploy log for `accounts stored in: postgres`.
+
+Tables are created automatically. If the server still has a `data/db.json` from an earlier
+version when it first connects, those accounts and portfolios are imported into Postgres.
+(Avoid Render's *free* Postgres for this — it's deleted after 30 days.)
+
 ## Run it
 
-Needs **Node.js 18+**. No dependencies to install.
+Needs **Node.js 18+**.
 
 ```sh
 cd pokemon-portfolio
+npm install          # only dependency: pg (PostgreSQL driver)
 npm start            # or: node server.js
 # open http://localhost:3000
 ```
@@ -42,15 +66,16 @@ HTTPS for phones.
 | Variable | Purpose |
 |---|---|
 | `PORT` | Port to listen on (default `3000`). |
-| `DATA_DIR` | Where accounts and portfolios are stored (default `./data`). Use a persistent disk in production. |
+| `DATABASE_URL` | **Recommended for any hosted site.** PostgreSQL connection string; accounts and portfolios are stored there and survive redeploys. |
+| `DATA_DIR` | Where accounts are stored when there's no `DATABASE_URL` (default `./data`). |
 | `PRICECHARTING_TOKEN` | Recommended. Your [PriceCharting API](https://www.pricecharting.com/api-documentation) token (paid subscription). When set, graded prices come from the official API. Without it, the server reads PriceCharting's public product pages, which is slower and can break if their page layout changes. |
 | `POKEMONTCG_API_KEY` | Optional free key from [pokemontcg.io](https://dev.pokemontcg.io) for higher rate limits. |
 | `TRUST_PROXY` | Set to `1` when running behind a reverse proxy so rate limiting uses `X-Forwarded-For`. |
 
 ### Deploying
 
-Any host that runs a Node process works (Render, Railway, Fly.io, a VPS). Give it a persistent
-volume and point `DATA_DIR` at it, otherwise accounts are lost on redeploy. The app can no longer be
+Any host that runs a Node process works (Render, Railway, Fly.io, a VPS). Set `DATABASE_URL`
+(see above) so accounts survive redeploys. Build command: `npm install`, start command: `npm start`. The app can no longer be
 hosted as static files only (e.g. GitHub Pages), because sign-in and PriceCharting lookups need the server.
 
 ## How it's built
@@ -58,9 +83,9 @@ hosted as static files only (e.g. GitHub Pages), because sign-in and PriceCharti
 ```
 server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/cards, /api/prices/*
 lib/auth.js      scrypt password hashing, 30-day HttpOnly session cookies
-lib/store.js     JSON-file database (atomic writes)
+lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
-public/          the web app (vanilla HTML/CSS/JS)
+public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching
 ```
 
 Prices are cached on the server (card data 6 h, prices 12 h) and the app refreshes your
