@@ -6,14 +6,10 @@
 (() => {
   'use strict';
 
-  const CARD_FIELDS = [
-    'id', 'name', 'supertype', 'subtypes', 'hp', 'types', 'evolvesFrom', 'abilities', 'attacks',
-    'weaknesses', 'resistances', 'retreatCost', 'number', 'artist', 'rarity', 'flavorText',
-    'nationalPokedexNumbers', 'regulationMark', 'rules', 'set', 'images', 'tcgplayer', 'cardmarket',
-  ].join(',');
   const GUEST_KEY = 'pokefolio.v1';
   const GUEST_FLAG = 'pokefolio.guest';
   const STALE_MS = 6 * 60 * 60 * 1000;
+  const PRICE_VERSION = 2; // bump when price matching changes so saved prices get recomputed
 
   const VARIANT_LABELS = {
     normal: 'Normal', holofoil: 'Holofoil', reverseHolofoil: 'Reverse Holo',
@@ -80,7 +76,7 @@
   async function pushRemote() {
     if (!user) return;
     try {
-      await api('/api/portfolio', { method: 'PUT', body: { items: state.items, history: state.history, pricesUpdatedAt: state.pricesUpdatedAt } });
+      await api('/api/portfolio', { method: 'PUT', body: { items: state.items, history: state.history, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
       setSync('ok', 'Synced');
     } catch (e) {
       if (e.status === 401) return signedOut('Your session expired — please sign in again.');
@@ -181,7 +177,7 @@
     $('#auth').hidden = true;
     $('#app').hidden = false;
     go('portfolio');
-    if (state.items.length && Date.now() - state.pricesUpdatedAt > STALE_MS) refreshPrices({ silent: true });
+    if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
     else if (state.items.length) recordSnapshot();
   }
 
@@ -240,14 +236,20 @@
     const p = card?.tcgplayer?.prices || {};
     return Object.keys(p).filter((k) => p[k] && (p[k].market != null || p[k].mid != null || p[k].low != null));
   }
+  // Same order as the server: unlimited before 1st Edition, since 1st Edition copies are rare
+  // and priced far higher.
+  const VARIANT_ORDER = ['holofoil', 'normal', 'unlimitedHolofoil', 'unlimited', 'reverseHolofoil', '1stEditionHolofoil', '1stEditionNormal', '1stEdition'];
   function defaultVariant(card) {
-    const v = variantsOf(card);
-    const order = ['holofoil', 'normal', '1stEditionHolofoil', 'unlimitedHolofoil', 'reverseHolofoil', '1stEditionNormal'];
-    return order.find((k) => v.includes(k)) || v[0] || null;
+    const p = card?.tcgplayer?.prices || {};
+    const priced = Object.keys(p).filter((k) => p[k]?.market != null);
+    const v = priced.length ? priced : variantsOf(card);
+    return VARIANT_ORDER.find((k) => v.includes(k)) || v[0] || null;
   }
+  // TCGplayer market price for exactly this printing. ("mid" is the middle of current listings,
+  // which can be far above what cards actually sell for, so it's never used as a value.)
   function tcgPrice(card, variant) {
     const p = card?.tcgplayer?.prices?.[variant || defaultVariant(card)];
-    return p ? (p.market ?? p.mid ?? null) : null;
+    return p?.market ?? null;
   }
   // Best known raw price for a card (search result / sheet): TCGplayer in the card, else server lookup.
   function knownRaw(card, variant) {
@@ -289,6 +291,7 @@
         if (p && p.price != null) { it.rawPrice = p.price; it.priceSource = p.source; found++; }
       }
       state.pricesUpdatedAt = Date.now();
+      state.priceVersion = PRICE_VERSION;
       recordSnapshot();
       renderPortfolio();
       if (!silent) toast(`Prices updated · ${found}/${state.items.length} cards priced`);
@@ -300,35 +303,12 @@
   }
 
   /* ================= Card search ================= */
-  async function apiSearch(q) {
-    const params = new URLSearchParams({ q, pageSize: '36', orderBy: '-set.releaseDate', select: CARD_FIELDS });
-    return (await api(`/api/cards?${params}`)).data || [];
-  }
-
-  // Free text like "Charizard 4/102" or "pikachu swsh20" -> queries from most to least specific.
-  function buildQueries({ name, number, total }) {
-    const clean = (name || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const words = clean.replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 4);
-    const nameQ = words.map((w) => `name:${w}`).join(' ');
-    const phrase = clean.replace(/[^a-z0-9.'\- ]/g, ' ').replace(/\s+/g, ' ').trim();
-    const nameWild = words.length ? words.slice(0, -1).map((w) => `name:${w}`).concat(`name:${words.at(-1)}*`).join(' ') : '';
-    const num = number ? `number:${number}` : '';
-    const tot = total ? `set.printedTotal:${total}` : '';
-    const qs = [];
-    if (nameQ && num && tot) qs.push(`${nameQ} ${num} ${tot}`);
-    if (nameQ && num) qs.push(`${nameQ} ${num}`);
-    if (num && tot) qs.push(`${num} ${tot}`);
-    if (nameQ) qs.push(nameQ);
-    if (nameWild) qs.push(nameWild);
-    if (phrase && /[.'\-]/.test(phrase)) qs.push(`name:"${phrase}"`);
-    return [...new Set(qs)];
-  }
-  async function findCards(parsed) {
-    for (const q of buildQueries(parsed)) {
-      const cards = await apiSearch(q);
-      if (cards.length) return cards;
-    }
-    return [];
+  async function findCards({ name, number, total }) {
+    const params = new URLSearchParams();
+    if (name) params.set('name', name);
+    if (number) params.set('number', number);
+    if (total) params.set('total', total);
+    return (await api(`/api/search?${params}`)).data || [];
   }
   function normNumber(n) { return /^\d+$/.test(n) ? String(+n) : n.toUpperCase(); }
   function promoNumber(prefix, digits) {
@@ -780,7 +760,8 @@
       : (loading ? 'Fetching market price…' : 'No sales data yet');
     $('#rawSrc').textContent = r?.source || '';
     $('#psaValue').innerHTML = psa10 != null ? money(psa10) : (loading ? '<span class="skeleton-line"></span>' : '—');
-    $('#psaFoot').textContent = psa10 != null && r?.price ? `${(psa10 / r.price).toFixed(1)}× raw` : (loading ? 'Fetching graded sales…' : 'Not enough sales');
+    const base = graded?.prices?.Ungraded ?? r?.price;
+    $('#psaFoot').textContent = psa10 != null && base ? `${(psa10 / base).toFixed(1)}× ungraded` : (loading ? 'Fetching graded sales…' : 'No graded sales found');
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
   }
@@ -795,7 +776,8 @@
     }
     const p = graded?.prices || {};
     const ladderKeys = ['PSA 10', 'Grade 9.5', 'Grade 9', 'Grade 8', 'Grade 7', 'Grade 6', 'Grade 5', 'Grade 4', 'Grade 3', 'Grade 2', 'Grade 1'].filter((k) => p[k] != null);
-    const rawPrice = raw?.price ?? p.Ungraded ?? null;
+    // Compare grades against PriceCharting's own ungraded price so the ladder is one consistent source.
+    const rawPrice = p.Ungraded ?? raw?.price ?? null;
     if (!ladderKeys.length) {
       box.innerHTML = `<p class="note">${gradedError ? 'Graded prices are temporarily unavailable.' : 'No graded sales found for this card yet.'}${graded?.url ? ` <a href="${esc(graded.url)}" target="_blank" rel="noopener">Check PriceCharting ↗</a>` : ''}</p>`;
       return;
@@ -804,17 +786,19 @@
     const rung = (label, val, cls = '') => `<div class="rung ${cls}">
         <span class="lbl">${esc(label)}</span>
         <div class="bar"><i style="width:${Math.max(2, (val / max) * 100).toFixed(1)}%"></i></div>
-        <span class="val"><b>${money(val)}</b>${rawPrice && cls !== 'raw' ? `<small>${(val / rawPrice).toFixed(1)}× raw</small>` : ''}</span>
+        <span class="val"><b>${money(val)}</b>${rawPrice && cls !== 'raw' ? `<small>${(val / rawPrice).toFixed(1)}× ungraded</small>` : ''}</span>
       </div>`;
     const others = Object.keys(p).filter((k) => k !== 'Ungraded' && !ladderKeys.includes(k));
     box.innerHTML = `
       <div class="ladder">
         ${ladderKeys.map((k) => rung(gradeLabel(k), p[k])).join('')}
-        ${rawPrice != null ? rung('Raw', rawPrice, 'raw') : ''}
+        ${rawPrice != null ? rung('Ungraded', rawPrice, 'raw') : ''}
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
-      <p class="note">Graded values from <a href="${esc(graded.url)}" target="_blank" rel="noopener">PriceCharting ↗</a>, based on recent sold listings.
-      Grades 9 and below are PriceCharting's “Grade N” averages, which are made up mostly of PSA sales; 9.5 is mostly BGS/CGC.</p>`;
+      ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
+      <p class="note">Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.
+      Values are recent sold listings. Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
+      Grades 9 and below are PriceCharting's “Grade N” averages, made up mostly of PSA sales; 9.5 is mostly BGS/CGC.</p>`;
   }
 
   async function loadCardPrices() {
@@ -842,7 +826,6 @@
       ctx.gradedError = e.message;
     }
     ctx.loading = false;
-    if (!ctx.item && $('#paidInput') && $('#paidInput').value === '' && ctx.raw) $('#paidInput').value = ctx.raw.price.toFixed(2);
     renderPriceHero();
     renderGraded();
   }
@@ -856,7 +839,7 @@
       variant: isOwned ? item.variant : defaultVariant(c),
       raw: null, graded: null, gradedError: null, loading: true,
     };
-    const startPaid = isOwned ? item.purchasePrice : knownRaw(c, sheetCtx.variant)?.price ?? null;
+    const startPaid = isOwned ? (item.purchasePrice || 0) : 0;
     const owned = state.items.filter((i) => i.cardId === c.id).reduce((n, i) => n + i.qty, 0);
 
     const set = c.set || {};
@@ -906,7 +889,7 @@
           </div>
         </div>
         <div class="field" style="margin-top:10px"><label for="paidInput">Price paid (each, USD)</label>
-          <input id="paidInput" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Optional" value="${startPaid != null ? startPaid.toFixed(2) : ''}">
+          <input id="paidInput" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${startPaid.toFixed(2)}">
         </div>
         <div class="actions">
           ${isOwned
@@ -953,15 +936,9 @@
     const body = $('#sheetBody');
     $$('#variantSeg button', body).forEach((b) => b.addEventListener('click', () => {
       if (b.dataset.v === sheetCtx.variant) return;
-      const prev = knownRaw(c, sheetCtx.variant)?.price;
       sheetCtx.variant = b.dataset.v;
       sheetCtx.raw = null;
       sheetCtx.graded = null;
-      const paid = $('#paidInput');
-      if (!isOwned && (paid.value === '' || (prev != null && +paid.value === +prev.toFixed(2)))) {
-        const m = knownRaw(c, sheetCtx.variant)?.price;
-        paid.value = m != null ? m.toFixed(2) : '';
-      }
       loadCardPrices();
     }));
     $$('[data-step]', body).forEach((b) => b.addEventListener('click', () => {
@@ -974,7 +951,7 @@
     const readForm = () => ({
       qty: Math.max(1, parseInt($('#qtyInput').value, 10) || 1),
       condition: $('#condSelect').value,
-      purchasePrice: $('#paidInput').value === '' ? null : Math.max(0, +$('#paidInput').value),
+      purchasePrice: Math.max(0, +$('#paidInput').value || 0),
       variant: sheetCtx.variant,
     });
     const currentRaw = () => sheetCtx.raw || knownRaw(c, sheetCtx.variant);

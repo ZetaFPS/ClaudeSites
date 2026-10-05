@@ -2,17 +2,30 @@
 // Card data + price sources, all fetched server-side (no CORS issues, API keys stay secret).
 //
 //   Pokémon TCG API  – card search/details + TCGplayer market prices per printing
-//   TCGdex           – free fallback for TCGplayer/Cardmarket prices when the above has none
-//   PriceCharting    – raw (ungraded) fallback + graded prices (PSA 10, Grade 9 … 1, BGS/CGC/SGC 10)
+//   TCGdex           – backup card search when the Pokémon TCG API is slow/down, and a
+//                      backup TCGplayer price source
+//   PriceCharting    – last-resort raw price + graded prices (PSA 10, Grade 9 … 1, BGS/CGC/SGC 10)
 //                      via the official API when PRICECHARTING_TOKEN is set, otherwise by
 //                      reading the public product page.
+//
+// Every match between sources is strict: same card name, same collector number, same set and
+// same printing (1st Edition / Reverse Holo). A wrong price is worse than no price.
 
 const POKEMONTCG = 'https://api.pokemontcg.io/v2';
 const TCGDEX = 'https://api.tcgdex.net/v2/en';
 const PC = 'https://www.pricecharting.com';
-const UA = 'Mozilla/5.0 (compatible; PokeFolio/2.0; +https://github.com/)';
+const UA = 'Mozilla/5.0 (compatible; PokeFolio/2.1)';
 
 const HOUR = 3600e3;
+const CARD_FIELDS = [
+  'id', 'name', 'supertype', 'subtypes', 'hp', 'types', 'evolvesFrom', 'abilities', 'attacks',
+  'weaknesses', 'resistances', 'retreatCost', 'number', 'artist', 'rarity', 'flavorText',
+  'nationalPokedexNumbers', 'regulationMark', 'rules', 'set', 'images', 'tcgplayer', 'cardmarket',
+].join(',');
+
+// Which printing a card defaults to. Unlimited before 1st Edition: most copies people own are
+// unlimited, and 1st Edition prices are often 10–50× higher.
+const VARIANT_ORDER = ['holofoil', 'normal', 'unlimitedHolofoil', 'unlimited', 'reverseHolofoil', '1stEditionHolofoil', '1stEditionNormal', '1stEdition'];
 
 /* ---------------- small utilities ---------------- */
 const cache = new Map();
@@ -32,14 +45,26 @@ async function fetchWithTimeout(url, opts = {}, ms = 15000) {
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     return await fetch(url, { ...opts, signal: ctrl.signal, headers: { 'User-Agent': UA, Accept: '*/*', ...(opts.headers || {}) } });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? `${new URL(url).host} timed out` : `${new URL(url).host} unreachable`);
   } finally {
     clearTimeout(t);
   }
 }
-async function getJson(url, headers) {
-  const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json', ...headers } });
+async function getJson(url, headers, ms) {
+  const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json', ...headers } }, ms);
   if (!res.ok) throw new Error(`${new URL(url).host} responded ${res.status}`);
   return res.json();
+}
+
+// Run fn over items with limited concurrency.
+async function mapLimit(items, n, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+  }));
+  return out;
 }
 
 // Polite limiter for PriceCharting: at most 2 requests in flight, spaced out.
@@ -62,83 +87,198 @@ const slug = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-
   .replace(/&/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 const words = (s) => slug(s).split('-').filter((w) => w && !['pokemon', 'set', 'and', 'the', 'tcg'].includes(w));
 const normKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-const numEq = (a, b) => {
-  const na = String(a || '').replace(/^0+(?=\d)/, '').toLowerCase();
-  const nb = String(b || '').replace(/^0+(?=\d)/, '').toLowerCase();
-  return na && na === nb;
-};
+const normNum = (n) => slug(n).replace(/^0+(?=\d)/, '').replace(/([a-z])0+(?=\d)/, '$1');
+const numEq = (a, b) => !!normNum(a) && normNum(a) === normNum(b);
 const money = (s) => {
   const m = String(s || '').replace(/,/g, '').match(/\$\s*(\d+(?:\.\d{1,2})?)/);
   return m ? +m[1] : null;
 };
+const is1st = (v) => normKey(v).includes('1stedition');
+const isReverse = (v) => normKey(v).includes('reverse');
+
+// Set names differ between sources ("Base" vs "Pokemon Base Set"); require at least half of
+// our set's words to appear in theirs.
+function setMatches(ourSet, theirSet, ourTotal, theirTotal) {
+  if (ourTotal && theirTotal && +ourTotal === +theirTotal) return true;
+  const ours = words(ourSet);
+  if (!ours.length) return false;
+  const theirs = new Set(words(theirSet));
+  return ours.filter((w) => theirs.has(w)).length / ours.length >= 0.5;
+}
 
 /* ---------------- Pokémon TCG API ---------------- */
-function ptcgHeaders() {
-  return process.env.POKEMONTCG_API_KEY ? { 'X-Api-Key': process.env.POKEMONTCG_API_KEY } : {};
+// The API is often slow or briefly down. After a failure, skip it for a short while so
+// searches go straight to TCGdex instead of waiting on timeouts.
+let ptcgDownUntil = 0;
+const ptcgUp = () => Date.now() > ptcgDownUntil;
+async function ptcgJson(url) {
+  try {
+    const headers = process.env.POKEMONTCG_API_KEY ? { 'X-Api-Key': process.env.POKEMONTCG_API_KEY } : {};
+    return await getJson(url, headers, 12000);
+  } catch (e) {
+    if (!/responded 4\d\d/.test(e.message)) ptcgDownUntil = Date.now() + 2 * 60e3;
+    throw e;
+  }
 }
-function searchCards({ q, pageSize = 36, orderBy = '-set.releaseDate', select = '' }) {
-  const params = new URLSearchParams({ q, pageSize: String(Math.min(+pageSize || 36, 100)), orderBy });
-  if (select) params.set('select', select);
-  const url = `${POKEMONTCG}/cards?${params}`;
-  return cached(`ptcg:${url}`, 30 * 60e3, () => getJson(url, ptcgHeaders()));
-}
-function getCard(id) {
-  return cached(`ptcg-card:${id}`, 6 * HOUR, async () => (await getJson(`${POKEMONTCG}/cards/${encodeURIComponent(id)}`, ptcgHeaders())).data);
+function ptcgSearch(q) {
+  const params = new URLSearchParams({ q, pageSize: '36', orderBy: '-set.releaseDate', select: CARD_FIELDS });
+  return cached(`ptcg:${params}`, 30 * 60e3, async () => (await ptcgJson(`${POKEMONTCG}/cards?${params}`)).data || []);
 }
 
 // Fetch many cards in a few requests and seed the per-card cache.
 async function primeCards(ids) {
-  const missing = ids.filter((id) => !(cache.get(`ptcg-card:${id}`)?.expires > Date.now()));
+  if (!ptcgUp()) return;
+  const missing = ids.filter((id) => !id.startsWith('tcgdex:') && !(cache.get(`card:${id}`)?.expires > Date.now()));
   for (let i = 0; i < missing.length; i += 50) {
     const chunk = missing.slice(i, i + 50);
     const q = '(' + chunk.map((id) => `id:"${id.replace(/"/g, '')}"`).join(' OR ') + ')';
-    const res = await getJson(`${POKEMONTCG}/cards?${new URLSearchParams({ q, pageSize: '100' })}`, ptcgHeaders());
-    for (const c of res.data || []) cache.set(`ptcg-card:${c.id}`, { promise: Promise.resolve(c), expires: Date.now() + 6 * HOUR });
+    const res = await ptcgJson(`${POKEMONTCG}/cards?${new URLSearchParams({ q, pageSize: '100' })}`);
+    for (const c of res.data || []) cache.set(`card:${c.id}`, { promise: Promise.resolve(c), expires: Date.now() + 6 * HOUR });
   }
-}
-
-function tcgplayerPrice(card, variant) {
-  const prices = card?.tcgplayer?.prices || {};
-  const pick = (v) => prices[v] && (prices[v].market ?? prices[v].mid ?? null);
-  if (variant && pick(variant) != null) return { price: pick(variant), variant };
-  for (const v of ['holofoil', 'normal', '1stEditionHolofoil', 'unlimitedHolofoil', 'reverseHolofoil', '1stEditionNormal', ...Object.keys(prices)]) {
-    if (pick(v) != null) return { price: pick(v), variant: v };
-  }
-  return null;
 }
 
 /* ---------------- TCGdex ---------------- */
-async function tcgdexCard({ name, number, total, setName }) {
-  if (!name || !number) return null;
-  const key = `tcgdex:${slug(name)}:${number}:${total}:${slug(setName)}`;
-  return cached(key, 12 * HOUR, async () => {
-    const list = await getJson(`${TCGDEX}/cards?name=${encodeURIComponent('eq:' + name)}`);
-    const candidates = (Array.isArray(list) ? list : []).filter((c) => numEq(c.localId, number)).slice(0, 6);
-    let best = null, bestScore = -1;
-    for (const brief of candidates) {
-      const full = await getJson(`${TCGDEX}/cards/${encodeURIComponent(brief.id)}`).catch(() => null);
-      if (!full) continue;
-      let score = 0;
-      if (total && +full.set?.cardCount?.official === +total) score += 3;
-      const sw = new Set(words(full.set?.name));
-      score += words(setName).filter((w) => sw.has(w)).length;
-      if (slug(full.set?.name) === slug(setName)) score += 5;
-      if (score > bestScore) { best = full; bestScore = score; }
+const camel = (k) => k.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
+function tcgdexFull(id) {
+  return cached(`dex-full:${id}`, 12 * HOUR, () => getJson(`${TCGDEX}/cards/${encodeURIComponent(id)}`));
+}
+// Convert a TCGdex card into the same shape the Pokémon TCG API uses.
+function fromTcgdex(c) {
+  const tp = c.pricing?.tcgplayer || {};
+  const prices = {};
+  for (const [k, v] of Object.entries(tp)) {
+    if (!v || typeof v !== 'object') continue;
+    prices[camel(k)] = { low: v.lowPrice ?? null, mid: v.midPrice ?? null, high: v.highPrice ?? null, market: v.marketPrice ?? null };
+  }
+  const cm = c.pricing?.cardmarket;
+  return {
+    id: `tcgdex:${c.id}`,
+    name: c.name,
+    supertype: c.category === 'Pokemon' ? 'Pokémon' : c.category,
+    subtypes: [c.stage, c.suffix, c.trainerType, c.energyType].filter(Boolean),
+    hp: c.hp != null ? String(c.hp) : undefined,
+    types: c.types,
+    evolvesFrom: c.evolveFrom,
+    abilities: (c.abilities || []).map((a) => ({ name: a.name, text: a.effect, type: a.type })),
+    attacks: (c.attacks || []).map((a) => ({ name: a.name, cost: a.cost || [], damage: a.damage != null ? String(a.damage) : '', text: a.effect })),
+    weaknesses: (c.weaknesses || []).map((w) => ({ type: w.type, value: w.value })),
+    resistances: (c.resistances || []).map((w) => ({ type: w.type, value: w.value })),
+    retreatCost: c.retreat ? Array(c.retreat).fill('Colorless') : undefined,
+    number: c.localId,
+    artist: c.illustrator,
+    rarity: c.rarity,
+    flavorText: c.description,
+    nationalPokedexNumbers: c.dexId,
+    regulationMark: c.regulationMark,
+    rules: c.effect ? [c.effect] : undefined,
+    set: {
+      id: c.set?.id, name: c.set?.name,
+      printedTotal: c.set?.cardCount?.official, total: c.set?.cardCount?.total,
+      images: { symbol: c.set?.symbol ? `${c.set.symbol}.png` : undefined, logo: c.set?.logo ? `${c.set.logo}.png` : undefined },
+    },
+    images: c.image ? { small: `${c.image}/low.webp`, large: `${c.image}/high.webp` } : {},
+    tcgplayer: Object.keys(prices).length ? { updatedAt: tp.updated || null, prices } : undefined,
+    cardmarket: cm ? { updatedAt: cm.updated || null, prices: { trendPrice: cm.trend, averageSellPrice: cm.avg, avg30: cm.avg30, lowPrice: cm.low } } : undefined,
+  };
+}
+
+async function tcgdexSearch({ name, number, total }) {
+  if (!name && !number) return [];
+  const key = `dex-search:${slug(name)}:${normNum(number)}:${total || ''}`;
+  return cached(key, 30 * 60e3, async () => {
+    let list = [];
+    if (name) list = await getJson(`${TCGDEX}/cards?name=${encodeURIComponent(name)}`);
+    else list = await getJson(`${TCGDEX}/cards?localId=${encodeURIComponent('eq:' + number)}`);
+    list = Array.isArray(list) ? list : [];
+    if (number) list = list.filter((c) => numEq(c.localId, number));
+    // Newest first is a decent default when there's no number to narrow it down.
+    const full = (await mapLimit(list.slice(-40).reverse(), 8, (b) => tcgdexFull(b.id).catch(() => null))).filter(Boolean);
+    let cards = full.map(fromTcgdex);
+    if (total) {
+      const exact = cards.filter((c) => +c.set.printedTotal === +total);
+      if (exact.length) cards = exact;
     }
-    return candidates.length === 1 || bestScore > 0 ? best : null;
+    return cards;
   });
 }
-function tcgdexPrice(card, variant) {
-  const tp = card?.pricing?.tcgplayer;
-  if (tp && typeof tp === 'object') {
-    const entries = Object.entries(tp).filter(([, v]) => v && typeof v === 'object');
-    const want = normKey(variant);
-    const val = (v) => v.marketPrice ?? v.market ?? v.midPrice ?? v.mid ?? null;
-    const exact = entries.find(([k, v]) => normKey(k) === want && val(v) != null);
-    const any = exact || entries.find(([, v]) => val(v) != null);
-    if (any) return { price: +val(any[1]), source: 'TCGplayer (via TCGdex)' };
+
+// Find the TCGdex copy of a Pokémon TCG API card (same name, number and set).
+async function tcgdexMatch(info) {
+  if (!info.name || !info.number) return null;
+  const cards = await tcgdexSearch({ name: info.name, number: info.number });
+  return cards.find((c) => slug(c.name) === slug(info.name) && setMatches(info.setName, c.set.name, info.total, c.set.printedTotal)) || null;
+}
+
+/* ---------------- Cards ---------------- */
+function getCard(id) {
+  return cached(`card:${id}`, 6 * HOUR, async () => {
+    if (id.startsWith('tcgdex:')) return fromTcgdex(await tcgdexFull(id.slice(7)));
+    return (await ptcgJson(`${POKEMONTCG}/cards/${encodeURIComponent(id)}`)).data;
+  });
+}
+
+function buildQueries({ name, number, total }) {
+  const clean = String(name || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const ws = clean.replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 4);
+  const nameQ = ws.map((w) => `name:${w}`).join(' ');
+  const phrase = clean.replace(/[^a-z0-9.'\- ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const nameWild = ws.length ? ws.slice(0, -1).map((w) => `name:${w}`).concat(`name:${ws.at(-1)}*`).join(' ') : '';
+  const num = number && /^[a-z0-9]{1,12}$/i.test(number) ? `number:${number}` : '';
+  const tot = total && /^\d{1,4}$/.test(total) ? `set.printedTotal:${total}` : '';
+  const qs = [];
+  if (nameQ && num && tot) qs.push(`${nameQ} ${num} ${tot}`);
+  if (nameQ && num) qs.push(`${nameQ} ${num}`);
+  if (num && tot) qs.push(`${num} ${tot}`);
+  if (nameQ) qs.push(nameQ);
+  if (nameWild) qs.push(nameWild);
+  if (phrase && /[.'\-]/.test(phrase)) qs.push(`name:"${phrase}"`);
+  return [...new Set(qs)];
+}
+
+// Search with automatic fallback: Pokémon TCG API first, TCGdex if it fails or finds nothing.
+// While the Pokémon TCG API is marked down, TCGdex goes first and the API is only tried if
+// TCGdex has no match.
+async function search(parsed) {
+  const viaPtcg = async () => {
+    for (const q of buildQueries(parsed)) {
+      const data = await ptcgSearch(q);
+      if (data.length) return data;
+    }
+    return [];
+  };
+  const viaDex = async () => {
+    let data = await tcgdexSearch(parsed);
+    // Number misread by the scanner? Retry on name alone.
+    if (!data.length && parsed.name && parsed.number) data = await tcgdexSearch({ name: parsed.name });
+    return data;
+  };
+  const [first, second] = ptcgUp() ? [[viaPtcg, 'pokemontcg'], [viaDex, 'tcgdex']] : [[viaDex, 'tcgdex'], [viaPtcg, 'pokemontcg']];
+  let firstError = null;
+  try {
+    const data = await first[0]();
+    if (data.length) return { data, source: first[1] };
+  } catch (e) {
+    firstError = e;
   }
-  return null;
+  try {
+    return { data: await second[0](), source: second[1] };
+  } catch (e) {
+    if (firstError) throw firstError;
+    return { data: [], source: first[1] };
+  }
+}
+
+/* ---------------- Raw price helpers ---------------- */
+function defaultVariant(card) {
+  const prices = card?.tcgplayer?.prices || {};
+  const keys = Object.keys(prices).filter((k) => prices[k]?.market != null);
+  return VARIANT_ORDER.find((k) => keys.includes(k)) || keys[0] || null;
+}
+// TCGplayer market price for exactly this printing (never a different printing's price).
+function tcgplayerPrice(card, variant) {
+  const v = variant || defaultVariant(card);
+  const p = v && card?.tcgplayer?.prices?.[v];
+  return p && p.market != null ? { price: +p.market, variant: v } : null;
 }
 
 /* ---------------- PriceCharting ---------------- */
@@ -152,44 +292,43 @@ const PC_PAGE_IDS = [
   ['box_only_price', 'Grade 9.5'], ['manual_only_price', 'PSA 10'],
 ];
 
-// Score how well a PriceCharting product (console slug + product slug) matches our card.
+const PRINTING_WORDS = new Set(['1st', 'edition', 'shadowless', 'unlimited', 'reverse', 'holo', 'cosmos', 'cracked', 'ice',
+  'master', 'poke', 'pokeball', 'ball', 'stamped', 'staff', 'prerelease', 'non', 'swirl', 'no', 'symbol', 'red', 'cheeks']);
+
+// Score a PriceCharting product (console slug + product slug) against our card.
+// Returns -1 unless name, number, set and printing all match.
 function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant }) {
-  if (!consoleSlug.startsWith('pokemon')) return -99;
-  let s = 0;
+  consoleSlug = slug(consoleSlug); productSlug = slug(productSlug);
+  if (!consoleSlug.startsWith('pokemon') || /japanese|chinese|korean|german|french|italian|spanish/.test(consoleSlug)) return -1;
+  const segs = productSlug.split('-');
+  if (!number || normNum(segs.at(-1)) !== normNum(number)) return -1;
+  const base = segs.slice(0, -1).join('-');
   const nameSlug = slug(name);
-  if (productSlug === `${nameSlug}-${slug(number)}`) s += 12;
-  else if (productSlug.startsWith(nameSlug)) s += 6;
-  else if (productSlug.includes(nameSlug)) s += 3;
-  else return -99;
-  if (number && new RegExp(`(^|-)${slug(String(number).replace(/^0+(?=\d)/, ''))}($|-)`).test(productSlug.replace(/-0+(\d)/g, '-$1'))) s += 6;
-  else if (number) s -= 6;
-  const cw = new Set(words(consoleSlug));
-  const sw = words(setName);
-  s += sw.filter((w) => cw.has(w)).length * 2;
-  if (sw.length && sw.every((w) => cw.has(w))) s += 3;
-  // Penalise extra console words ("base-set-2" when we want "Base").
-  const swSet = new Set(sw);
-  s -= [...cw].filter((w) => !swSet.has(w)).length;
-  if (/japanese|chinese|korean/.test(consoleSlug)) s -= 15;
-  const wantsReverse = /reverse/i.test(variant || '');
-  const wants1st = /1stedition/i.test(normKey(variant));
-  if (/reverse-holo/.test(productSlug) !== wantsReverse) s -= 4;
-  if (/1st-edition/.test(productSlug + consoleSlug) !== wants1st) s -= 3;
-  return s;
+  if (!nameSlug || (base !== nameSlug && !base.startsWith(`${nameSlug}-`))) return -1;
+  const tags = base.slice(nameSlug.length);
+  // Extra words may only describe the printing ("[Shadowless]", "[Reverse Holo]"); anything else
+  // ("ex", "V", "GX"…) means it's a different card.
+  if (tags.split('-').filter(Boolean).some((w) => !PRINTING_WORDS.has(w))) return -1;
+  if (/reverse-holo/.test(tags) !== isReverse(variant)) return -1;
+  if (/1st-edition/.test(tags) !== is1st(variant)) return -1;
+  const ours = words(setName);
+  const theirs = words(consoleSlug);
+  const hit = ours.filter((w) => theirs.includes(w)).length;
+  if (!ours.length || hit / ours.length < 0.5) return -1;
+  // Prefer exact set names and plain products over tagged ones ("[Shadowless]", "[Cosmos Holo]").
+  return 10 + hit * 2 - (theirs.length - hit) - tags.split('-').filter(Boolean).length * 2;
 }
 
 async function pcViaApi(info) {
   const token = process.env.PRICECHARTING_TOKEN;
-  const queries = [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`];
-  for (const q of queries) {
+  for (const q of [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]) {
     const res = await pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`));
-    const products = res.products || [];
-    let best = null, bestScore = 0;
-    for (const p of products) {
-      const sc = scoreProduct(slug(p['console-name']), slug(p['product-name']), info);
+    let best = null, bestScore = -1;
+    for (const p of res.products || []) {
+      const sc = scoreProduct(p['console-name'], p['product-name'], info);
       if (sc > bestScore) { best = p; bestScore = sc; }
     }
-    if (best && bestScore >= 10) {
+    if (best) {
       const p = await pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.id)}`));
       const prices = {};
       for (const [field, label] of PC_API_FIELDS) if (p[field] > 0) prices[label] = p[field] / 100;
@@ -230,24 +369,23 @@ function parseProductPage(html) {
 }
 
 async function pcViaPage(info) {
-  const queries = [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`];
-  for (const q of queries) {
+  for (const q of [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]) {
     const { url, html } = await pcFetchPage(`${PC}/search-products?type=prices&q=${encodeURIComponent(q)}`);
-    let productUrl = null;
-    if (/\/game\/[^/]+\/[^/?#]+/.test(new URL(url).pathname)) {
-      // Search jumped straight to a product page — make sure it is the right card.
-      const [, c, p] = new URL(url).pathname.match(/\/game\/([^/]+)\/([^/?#]+)/);
-      if (scoreProduct(c, p, info) >= 10) {
+    const direct = new URL(url).pathname.match(/\/game\/([^/]+)\/([^/?#]+)/);
+    if (direct) {
+      // Search jumped straight to a product page — use it only if it's the right card.
+      if (scoreProduct(decodeURIComponent(direct[1]), decodeURIComponent(direct[2]), info) >= 0) {
         const parsed = parseProductPage(html);
         if (Object.keys(parsed.prices).length) return { ...parsed, url };
       }
+      continue;
     }
-    let bestScore = 0;
+    let productUrl = null, bestScore = -1;
     for (const m of html.matchAll(/href=["'](?:https?:\/\/www\.pricecharting\.com)?\/game\/([a-z0-9\-&%]+)\/([a-z0-9\-%]+)["']/gi)) {
-      const sc = scoreProduct(decodeURIComponent(m[1]).toLowerCase(), decodeURIComponent(m[2]).toLowerCase(), info);
+      const sc = scoreProduct(decodeURIComponent(m[1]), decodeURIComponent(m[2]), info);
       if (sc > bestScore) { bestScore = sc; productUrl = `${PC}/game/${m[1]}/${m[2]}`; }
     }
-    if (productUrl && bestScore >= 10) {
+    if (productUrl) {
       const page = await pcFetchPage(productUrl);
       const parsed = parseProductPage(page.html);
       if (Object.keys(parsed.prices).length) return { ...parsed, url: page.url };
@@ -257,46 +395,58 @@ async function pcViaPage(info) {
 }
 
 function priceCharting(info) {
-  if (!info.name) return Promise.resolve(null);
-  const key = `pc:${slug(info.name)}:${slug(info.setName)}:${info.number}:${normKey(info.variant).includes('reverse') ? 'rev' : ''}${normKey(info.variant).includes('1stedition') ? '1st' : ''}`;
+  if (!info.name || !info.number) return Promise.resolve(null);
+  const key = `pc:${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
   return cached(key, 12 * HOUR, () => (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info)));
 }
 
 /* ---------------- Public API ---------------- */
 function cardInfo(card, variant) {
   return {
-    id: card.id, name: card.name, setName: card.set?.name || '', setId: card.set?.id || '',
-    number: card.number, total: card.set?.printedTotal, variant,
+    id: card.id, name: card.name, setName: card.set?.name || '', number: card.number,
+    total: card.set?.printedTotal, variant: variant || defaultVariant(card),
   };
 }
 
-// Raw (ungraded) market price in USD: TCGplayer → TCGdex → PriceCharting "Ungraded".
+// Raw (ungraded, near-mint) market price in USD for one printing:
+// TCGplayer market (Pokémon TCG API) → TCGplayer market (TCGdex) → PriceCharting "Ungraded".
 async function rawPrice(id, variant) {
   const card = await getCard(id);
   const info = cardInfo(card, variant);
-  const tp = tcgplayerPrice(card, variant);
+  const tp = tcgplayerPrice(card, info.variant);
   if (tp) return { price: tp.price, source: 'TCGplayer', variant: tp.variant, updatedAt: card.tcgplayer?.updatedAt || null };
-  const dex = await tcgdexCard(info).catch(() => null);
-  const dp = tcgdexPrice(dex, variant);
-  if (dp) return { ...dp, updatedAt: dex.pricing?.tcgplayer?.updated || null };
+  if (!id.startsWith('tcgdex:')) {
+    const dex = await tcgdexMatch(info).catch(() => null);
+    const dp = dex && tcgplayerPrice(dex, info.variant);
+    if (dp) return { price: dp.price, source: 'TCGplayer', variant: dp.variant, updatedAt: dex.tcgplayer?.updatedAt || null };
+  }
   const pc = await priceCharting(info).catch(() => null);
-  if (pc?.prices?.Ungraded != null) return { price: pc.prices.Ungraded, source: 'PriceCharting', updatedAt: null };
-  return { price: null, source: null };
+  if (pc?.prices?.Ungraded != null) return { price: pc.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: null };
+  return { price: null, source: null, variant: info.variant };
 }
 
-// Everything for the card detail view: raw price + graded ladder.
+// Everything for the card detail view: raw price + graded ladder, with a sanity check.
 async function fullPrices(id, variant) {
   const card = await getCard(id);
   const info = cardInfo(card, variant);
   const [raw, pc] = await Promise.all([
-    rawPrice(id, variant),
+    rawPrice(id, info.variant),
     priceCharting(info).catch((e) => ({ error: e.message })),
   ]);
-  return {
-    raw,
-    graded: pc && !pc.error ? { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices } : null,
-    gradedError: pc?.error || null,
-  };
+  let graded = null;
+  if (pc && !pc.error) {
+    const warnings = [];
+    const ungraded = pc.prices.Ungraded;
+    if (raw.price != null && ungraded != null && raw.source !== 'PriceCharting') {
+      const ratio = ungraded / raw.price;
+      if (ratio > 3 || ratio < 1 / 3) warnings.push(`PriceCharting's ungraded price ($${ungraded.toFixed(2)}) is far from TCGplayer's ($${raw.price.toFixed(2)}) — the graded match may be a different printing.`);
+    }
+    if (pc.prices['PSA 10'] != null && ungraded != null && pc.prices['PSA 10'] < ungraded) {
+      warnings.push('PSA 10 is listed below the ungraded price, which usually means very few graded sales.');
+    }
+    graded = { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices, warnings };
+  }
+  return { raw, graded, gradedError: pc?.error || null };
 }
 
-module.exports = { searchCards, getCard, primeCards, rawPrice, fullPrices, _test: { scoreProduct, parseProductPage, slug, cache } };
+module.exports = { search, getCard, primeCards, rawPrice, fullPrices, _test: { scoreProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, cache } };

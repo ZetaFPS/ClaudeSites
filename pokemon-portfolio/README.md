@@ -10,8 +10,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
-  2. TCGplayer price via [TCGdex](https://tcgdex.dev) if the first has none
-  3. PriceCharting "Ungraded" price
+  2. TCGplayer market price via [TCGdex](https://tcgdex.dev) for the same card (same set, number and printing)
+  3. PriceCharting "Ungraded" price (strict match: name, number, set and printing must all agree)
+
+  Unlimited printings are the default over 1st Edition. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,

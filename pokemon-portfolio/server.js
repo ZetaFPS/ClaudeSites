@@ -138,25 +138,24 @@ async function api(req, res, url) {
       const body = await readBody(req);
       if (!Array.isArray(body.items) || body.items.length > 10000) throw httpError(400, 'Invalid portfolio.');
       const history = body.history && typeof body.history === 'object' && !Array.isArray(body.history) ? body.history : {};
-      const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, updatedAt: Date.now() };
+      const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
       store.data.portfolios[user.id] = doc;
       store.save();
       return send(res, 200, { ok: true, updatedAt: doc.updatedAt });
     }
   }
 
-  // --- card search (proxied so an API key can be used and results cached) ---
-  if (pathname === '/api/cards' && method === 'GET') {
+  // --- card search (Pokémon TCG API with TCGdex fallback) ---
+  if (pathname === '/api/search' && method === 'GET') {
     limitApi(req);
-    const q = url.searchParams.get('q');
-    if (!q || q.length > 2000) throw httpError(400, 'Missing query.');
-    const data = await prices.searchCards({
-      q,
-      pageSize: url.searchParams.get('pageSize') || 36,
-      orderBy: url.searchParams.get('orderBy') || '-set.releaseDate',
-      select: url.searchParams.get('select') || '',
-    });
-    return send(res, 200, { data: data.data || [] });
+    const p = url.searchParams;
+    const parsed = {
+      name: (p.get('name') || '').slice(0, 80),
+      number: (p.get('number') || '').slice(0, 12) || null,
+      total: (p.get('total') || '').slice(0, 4) || null,
+    };
+    if (!parsed.name && !parsed.number) throw httpError(400, 'Enter a card name or number.');
+    return send(res, 200, await prices.search(parsed));
   }
 
   // --- raw prices for many cards (portfolio refresh / search results) ---
@@ -180,7 +179,7 @@ async function api(req, res, url) {
   }
 
   // --- full price breakdown for one card (raw + graded) ---
-  const m = pathname.match(/^\/api\/prices\/([A-Za-z0-9._-]{1,64})$/);
+  const m = decodeURIComponent(pathname).match(/^\/api\/prices\/([A-Za-z0-9._:-]{1,80})$/);
   if (m && method === 'GET') {
     limitApi(req);
     return send(res, 200, await prices.fullPrices(m[1], url.searchParams.get('variant')));
