@@ -531,47 +531,71 @@
 
   /* ================= Search results ================= */
   let lastResults = [];
+  const proxied = (u) => (u ? `/api/img?u=${encodeURIComponent(u)}` : '');
   function resultPriceHtml(c) {
     const r = knownRaw(c, defaultVariant(c));
     return r ? `<small>RAW</small>${money(r.price)}` : '<span class="skeleton-line"></span>';
   }
-  async function runSearch(parsed, label) {
+
+  // Render a result grid. `scores` (Map id -> 0…1) adds visual-match badges.
+  function renderResults(cards, headText, { scores = null, best = null } = {}) {
+    lastResults = cards;
     const head = $('#resultsHead'), grid = $('#results');
     head.hidden = false;
-    head.textContent = label ? `Searching for ${label}…` : 'Searching…';
-    grid.innerHTML = Array.from({ length: 6 }, () => '<div class="skeleton"></div>').join('');
-    try {
-      const cards = await findCards(parsed);
-      lastResults = cards;
-      if (!cards.length) {
-        head.textContent = `No cards found${label ? ` for ${label}` : ''}. Try the name plus number, e.g. “Pikachu 58/102”.`;
-        grid.innerHTML = '';
-        return cards;
-      }
-      head.textContent = `${cards.length}${cards.length >= 36 ? '+' : ''} match${cards.length === 1 ? '' : 'es'}${label ? ` for ${label}` : ''} — tap a card to add it`;
-      grid.innerHTML = cards.map((c, i) => `<button class="result" data-i="${i}">
-          <img src="${esc(c.images?.small)}" alt="" loading="lazy">
+    head.textContent = headText;
+    grid.innerHTML = cards.map((c, i) => {
+      const sc = scores?.get(c.id);
+      const badge = sc != null
+        ? `<span class="match ${c.id === best ? 'best' : ''}">${c.id === best ? 'Best match · ' : ''}${Math.round(sc * 100)}%</span>`
+        : (scores ? '<span class="match pending">matching…</span>' : '');
+      return `<button class="result ${c.id === best ? 'is-best' : ''}" data-i="${i}">
+          ${badge}
+          <img src="${esc(proxied(c.images?.small))}" alt="" loading="lazy">
           <div class="name">${esc(c.name)}</div>
           <div class="sub">${esc(c.set?.name)} · #${esc(c.number)}</div>
           <div class="p num" data-price="${i}">${resultPriceHtml(c)}</div>
-        </button>`).join('');
-      // Fill in prices the card data didn't include.
-      const missing = cards.map((c, i) => ({ c, i })).filter(({ c }) => !knownRaw(c, defaultVariant(c)));
-      if (missing.length) {
-        fetchRaw(missing.map(({ c }) => ({ id: c.id, variant: defaultVariant(c) })))
-          .catch(() => {})
-          .finally(() => {
-            if (lastResults !== cards) return;
-            for (const { c, i } of missing) {
-              const el = $(`[data-price="${i}"]`);
-              if (el) el.innerHTML = knownRaw(c, defaultVariant(c)) ? resultPriceHtml(c) : '<span class="muted">No price</span>';
-            }
-          });
+        </button>`;
+    }).join('');
+    fillMissingPrices(cards);
+  }
+
+  function fillMissingPrices(cards) {
+    const missing = cards.map((c, i) => ({ c, i })).filter(({ c }) => !knownRaw(c, defaultVariant(c)));
+    if (!missing.length) return;
+    fetchRaw(missing.map(({ c }) => ({ id: c.id, variant: defaultVariant(c) })))
+      .catch(() => {})
+      .finally(() => {
+        if (lastResults !== cards) return;
+        for (const { c, i } of missing) {
+          const el = $(`[data-price="${i}"]`);
+          if (el) el.innerHTML = knownRaw(c, defaultVariant(c)) ? resultPriceHtml(c) : '<span class="muted">No price</span>';
+        }
+      });
+  }
+
+  function showSearching(label) {
+    const head = $('#resultsHead');
+    head.hidden = false;
+    head.textContent = label ? `Searching for ${label}…` : 'Searching…';
+    $('#results').innerHTML = Array.from({ length: 6 }, () => '<div class="skeleton"></div>').join('');
+  }
+  function showSearchError(e) {
+    $('#resultsHead').textContent = e.status === 429 ? e.message : 'Couldn’t reach the card database. Check your connection and try again.';
+    $('#results').innerHTML = '';
+  }
+
+  async function runSearch(parsed, label) {
+    showSearching(label);
+    try {
+      const cards = await findCards(parsed);
+      if (!cards.length) {
+        renderResults([], `No cards found${label ? ` for ${label}` : ''}. Try the name plus number, e.g. “Pikachu 58/102”.`);
+        return cards;
       }
+      renderResults(cards, `${cards.length}${cards.length >= 36 ? '+' : ''} match${cards.length === 1 ? '' : 'es'}${label ? ` for ${label}` : ''} — tap a card to add it`);
       return cards;
     } catch (e) {
-      head.textContent = e.status === 429 ? e.message : 'Couldn’t reach the card database. Check your connection and try again.';
-      grid.innerHTML = '';
+      showSearchError(e);
       return [];
     }
   }
@@ -683,40 +707,108 @@
     return { number: null, total: null };
   }
 
+  // Cards that might be the scanned one: exact text match plus same-name cards (in case the
+  // number was misread) and same-number cards (in case the name was).
+  async function gatherCandidates({ name, number, total }) {
+    const tries = [];
+    if (name) tries.push({ name, number, total });
+    if (name && number) tries.push({ name });
+    if (number && total) tries.push({ number, total });
+    if (!name && number) tries.push({ number });
+    const results = await Promise.allSettled(tries.map((t) => findCards(t)));
+    if (results.every((r) => r.status === 'rejected')) throw results[0].reason;
+    const seen = new Map();
+    for (const r of results) if (r.status === 'fulfilled') for (const c of r.value) if (!seen.has(c.id)) seen.set(c.id, c);
+    return [...seen.values()].slice(0, 60);
+  }
+
+  // Visual similarity blended with what the text said.
+  function blendedScore(card, visual, { name, number, total }) {
+    let s = visual;
+    const norm = (x) => String(x || '').toLowerCase().replace(/^0+(?=\d)/, '');
+    // Text is only a tie-breaker: OCR misreads numbers often, artwork doesn't lie.
+    if (number && norm(card.number) === norm(number)) s += 0.025;
+    if (total && +card.set?.printedTotal === +total) s += 0.01;
+    if (name && card.name.toLowerCase().startsWith(name.toLowerCase())) s += 0.01;
+    return s;
+  }
+
   async function scanCanvas(card, { wholeImage = false } = {}) {
     const status = $('#scanStatus');
     const scanner = $('.scanner');
     status.hidden = false;
-    status.textContent = '› analysing card…';
+    status.textContent = '› reading card…';
     scanner.classList.add('busy');
     $('#shutterBtn').disabled = true;
+    // Keep a private copy: the capture canvas is reused by the next scan.
+    const photo = document.createElement('canvas');
+    photo.width = card.width; photo.height = card.height;
+    photo.getContext('2d').drawImage(card, 0, 0);
     try {
-      const worker = await getOcrWorker();
-      const read = async (canvas, psm) => {
-        await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
-        return (await worker.recognize(canvas)).data.text || '';
-      };
       let name = '', number = null, total = null;
-      if (!wholeImage) {
-        name = parseName(await read(band(card, 0.04, 0.025, 0.74, 0.12), 7));
-        ({ number, total } = parseNumber(await read(band(card, 0.02, 0.86, 0.98, 0.985, 2.6), 11)));
-      }
-      if (!name || !number) {
-        const full = await read(band(card, 0, 0, 1, 1, 1.4), 3);
-        if (!name) name = parseName(full);
-        if (!number) ({ number, total } = parseNumber(full));
+      try {
+        const worker = await getOcrWorker();
+        const read = async (canvas, psm) => {
+          await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
+          return (await worker.recognize(canvas)).data.text || '';
+        };
+        if (!wholeImage) {
+          name = parseName(await read(band(photo, 0.04, 0.025, 0.74, 0.12), 7));
+          ({ number, total } = parseNumber(await read(band(photo, 0.02, 0.86, 0.98, 0.985, 2.6), 11)));
+        }
+        if (!name || !number) {
+          const full = await read(band(photo, 0, 0, 1, 1, 1.4), 3);
+          if (!name) name = parseName(full);
+          if (!number) ({ number, total } = parseNumber(full));
+        }
+      } catch (e) {
+        status.textContent = 'Text reader failed to load — search by name below.';
+        return;
       }
       if (!name && !number) {
         status.textContent = 'Couldn’t read that card. Fill the frame, avoid glare, hold steady — or search below.';
         return;
       }
+      const parsed = { name, number, total };
       const label = [name, number && (total ? `${number}/${total}` : `#${number}`)].filter(Boolean).join(' ');
-      status.textContent = `› detected: ${label}`;
-      const cards = await runSearch({ name, number, total }, label);
-      if (cards.length === 1) openCard({ card: cards[0] });
-      else if (cards.length) $('#resultsHead').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (e) {
-      status.textContent = 'Scanner couldn’t start (OCR failed to load). You can still search by name below.';
+      status.textContent = `› read “${label}” · finding candidates…`;
+      showSearching(label);
+      let cards;
+      try { cards = await gatherCandidates(parsed); } catch (e) { showSearchError(e); status.textContent = ''; return; }
+      if (!cards.length) {
+        renderResults([], `No cards found for ${label}. Try again, or search by name below.`);
+        status.textContent = `› read “${label}”`;
+        return;
+      }
+
+      // Image recognition: compare the photo with every candidate's artwork.
+      const scores = new Map();
+      renderResults(cards, `Comparing your photo with ${cards.length} card${cards.length === 1 ? '' : 's'}…`, { scores });
+      status.textContent = '› matching artwork…';
+      let visual = new Map();
+      if (window.CardVision) {
+        visual = await window.CardVision.rank(photo, cards.map((c) => ({ key: c.id, url: proxied(c.images?.small) })), {
+          isCard: !wholeImage,
+          onProgress: (d, n) => { status.textContent = `› matching artwork ${d}/${n}`; },
+        }).catch(() => new Map());
+      }
+      const ranked = cards
+        .map((c) => ({ c, v: visual.get(c.id), s: blendedScore(c, visual.get(c.id) ?? 0, parsed) }))
+        .sort((a, b) => b.s - a.s);
+      for (const r of ranked) if (r.v != null) scores.set(r.c.id, r.v);
+      const top = ranked[0], second = ranked[1];
+      const best = visual.size ? top.c.id : null;
+      renderResults(ranked.map((r) => r.c),
+        visual.size
+          ? `${cards.length} candidate${cards.length === 1 ? '' : 's'} for “${label}”, ranked by how closely the artwork matches your photo`
+          : `${cards.length} match${cards.length === 1 ? '' : 'es'} for “${label}” — tap a card to add it`,
+        { scores: visual.size ? scores : null, best });
+      status.textContent = visual.size ? `› best match: ${top.c.name} · ${top.c.set?.name} #${top.c.number}` : `› read “${label}”`;
+
+      // Confident? Jump straight to the card.
+      const confident = cards.length === 1 || (top.v != null && top.v >= 0.62 && (!second || top.s - second.s >= 0.06));
+      if (confident) openCard({ card: top.c });
+      else $('#resultsHead').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } finally {
       scanner.classList.remove('busy');
       $('#shutterBtn').disabled = !stream;

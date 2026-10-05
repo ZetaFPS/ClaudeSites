@@ -185,7 +185,45 @@ async function api(req, res, url) {
     return send(res, 200, await prices.fullPrices(m[1], url.searchParams.get('variant')));
   }
 
+  // --- card image proxy (same-origin, so the scanner can compare pixels) ---
+  if (pathname === '/api/img' && method === 'GET') {
+    return proxyImage(res, url.searchParams.get('u'));
+  }
+
   throw httpError(404, 'Not found.');
+}
+
+const IMG_HOSTS = new Set(['images.pokemontcg.io', 'assets.tcgdex.net']);
+const imgCache = new Map(); // url -> { type, body }
+async function proxyImage(res, raw) {
+  let target;
+  try { target = new URL(raw); } catch { throw httpError(400, 'Bad image URL.'); }
+  if (target.protocol !== 'https:' || !IMG_HOSTS.has(target.hostname)) throw httpError(400, 'Image host not allowed.');
+  let hit = imgCache.get(target.href);
+  if (!hit) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    let up;
+    try {
+      up = await fetch(target.href, { signal: ctrl.signal, headers: { 'User-Agent': 'PokeFolio/2.2' } });
+    } finally {
+      clearTimeout(timer);
+    }
+    const type = (up.headers.get('content-type') || '').split(';')[0];
+    if (!up.ok || !/^image\/(png|jpeg|webp|gif|avif)$/.test(type)) throw httpError(502, 'Image unavailable.');
+    const body = Buffer.from(await up.arrayBuffer());
+    if (body.length > 4 * 1024 * 1024) throw httpError(502, 'Image too large.');
+    hit = { type, body };
+    imgCache.set(target.href, hit);
+    if (imgCache.size > 400) imgCache.delete(imgCache.keys().next().value);
+  }
+  res.writeHead(200, {
+    'Content-Type': hit.type,
+    'Content-Length': hit.body.length,
+    'Cache-Control': 'public, max-age=604800, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(hit.body);
 }
 
 function serveStatic(req, res, url) {

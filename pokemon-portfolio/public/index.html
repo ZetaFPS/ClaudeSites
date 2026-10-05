@@ -60,6 +60,7 @@
     <main>
       <!-- PORTFOLIO -->
       <section class="view active" id="view-portfolio" aria-label="Portfolio">
+        <div class="dash-top">
         <div class="hero glass edge">
           <div class="hero-top">
             <span class="eyebrow">Portfolio value · Raw</span>
@@ -88,6 +89,7 @@
           <div class="stat glass"><div class="stat-label">Cost basis</div><div class="stat-value num" id="statCost">$0.00</div></div>
           <div class="stat glass"><div class="stat-label">Total P/L</div><div class="stat-value num" id="statGain">—</div></div>
         </div>
+        </div>
 
         <div class="list-head">
           <h2>Collection</h2>
@@ -113,6 +115,8 @@
 
       <!-- SCAN -->
       <section class="view" id="view-scan" aria-label="Scan">
+        <div class="scan-layout">
+        <div class="scan-col">
         <div class="scanner">
           <video id="video" playsinline muted autoplay></video>
           <canvas id="captureCanvas" hidden></canvas>
@@ -136,6 +140,8 @@
           <button class="btn ghost" id="stopCamBtn" disabled>Stop</button>
         </div>
         <div class="scan-status" id="scanStatus" hidden></div>
+        </div>
+        <div class="find-col">
 
         <form class="search-bar" id="searchForm">
           <svg class="search-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -144,10 +150,18 @@
         </form>
         <div class="results-head" id="resultsHead" hidden></div>
         <div class="results-grid" id="results"></div>
+        <div class="find-hint glass">
+          <div class="reticle small" aria-hidden="true"></div>
+          <h3>Scan or search to find a card</h3>
+          <p>Snap a card with the camera or upload a photo. PokéFolio reads the name and number, then compares the artwork against every candidate and puts the closest visual match first.</p>
+        </div>
+        </div>
+        </div>
       </section>
     </main>
 
     <nav class="tabbar glass" aria-label="Main">
+      <div class="side-brand" aria-hidden="true"><span class="logo-mark"></span><span>Poké<b>Folio</b></span></div>
       <button class="tab active" data-goto="portfolio">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 4 8-9"/><path d="M14 7h6v6"/></svg>
         <span>Portfolio</span>
@@ -180,6 +194,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+  <script src="vision.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>

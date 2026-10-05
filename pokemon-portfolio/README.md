@@ -6,7 +6,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   follows you across devices. "Continue without an account" keeps cards in the browser, and they're
   imported automatically when you later create an account.
 - **Scan a card** with your camera (or a photo). On-device OCR (Tesseract.js) reads the name and
-  collector number (e.g. `4/102`) and looks the card up.
+  collector number (e.g. `4/102`) to gather candidates — including same-name cards in case the number
+  was misread — then **image recognition** compares your photo with each candidate's artwork and puts
+  the closest visual match first (with a match %). Confident matches open automatically. Uncropped
+  photos work too: the card is located in the picture first. (`public/vision.js`, no model download.)
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
@@ -16,6 +19,8 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   Unlimited printings are the default over 1st Edition. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
+- Works on phones, tablets and desktops: on large screens you get a sidebar, a dashboard layout,
+  a card-grid collection and a side-by-side card view.
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,
   TCGplayer prices by printing and Cardmarket (EUR) prices.
 
