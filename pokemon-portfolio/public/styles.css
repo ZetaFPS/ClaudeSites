@@ -109,8 +109,14 @@ img { display: block; }
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 16px;
-  background: linear-gradient(var(--bg) 40%, transparent);
 }
+/* Fade behind the sticky top bar so content scrolls away under it. Drawn once across the whole
+   window (not just the content column), so it never ends in a hard vertical edge. */
+.app::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 84px; z-index: 15; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(5, 6, 11, .92) 0%, rgba(5, 6, 11, .7) 45%, rgba(5, 6, 11, .3) 75%, rgba(5, 6, 11, 0) 100%);
+}
+@media (min-width: 1024px) { .app::before { height: 96px; } }
 .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: 600; font-size: 20px; letter-spacing: -.01em; }
 .brand b { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700; }
 .top-actions { display: flex; gap: 8px; align-items: center; }
