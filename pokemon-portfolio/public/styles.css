@@ -186,7 +186,7 @@ img { display: block; }
 .list-head h2 { font-family: var(--font-display); font-size: 20px; margin: 0; letter-spacing: -.01em; }
 .list-tools { display: flex; gap: 8px; flex: 1; justify-content: flex-end; min-width: 0; }
 .list-tools input, .list-tools select {
-  background: var(--glass); border: 1px solid var(--edge); border-radius: 11px; padding: 8px 11px; font-size: 13px; min-width: 0;
+  background-color: var(--glass); border: 1px solid var(--edge); border-radius: 11px; padding: 8px 11px; font-size: 13px; min-width: 0;
 }
 .list-tools select option { background: #0d1020; }
 .list-tools input { flex: 1; max-width: 200px; }
@@ -246,7 +246,7 @@ img { display: block; }
 .btn.block { width: 100%; }
 .field label { display: block; color: var(--text-3); font-size: 11px; margin-bottom: 6px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .field input, .field select {
-  width: 100%; background: rgba(0,0,0,.3); border: 1px solid var(--edge); border-radius: 12px; padding: 11px 13px; font-size: 15px;
+  width: 100%; background-color: rgba(0,0,0,.3); border: 1px solid var(--edge); border-radius: 12px; padding: 11px 13px; font-size: 15px;
   transition: border-color .2s, box-shadow .2s;
 }
 .field select option { background: #0d1020; }
@@ -974,7 +974,7 @@ main > .storage-warn { margin: 0 16px 16px; }
 .idx-tools select { flex: 1 1 140px; min-width: 0; max-width: 100%; }
 @media (min-width: 1024px) { .idx-tools select { flex: 0 1 auto; } }
 .idx-tools input[type="search"], .idx-tools select {
-  background: var(--glass); border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; color: var(--text); font: inherit; font-size: 13.5px;
+  background-color: var(--glass); border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; color: var(--text); font: inherit; font-size: 13.5px;
 }
 .idx-owned { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); white-space: nowrap; }
 .idx-set { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 14px 0 0; font-size: 15px; font-family: var(--font-display); }
@@ -992,3 +992,20 @@ main > .storage-warn { margin: 0 16px 16px; }
 .idx-empty p { color: var(--text-2); margin: 0; }
 .idx-foot { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 18px 0 8px; }
 .idx-foot p { margin: 0; font-size: 12.5px; }
+
+/* ---------- Dropdowns: one dark style everywhere ----------
+   Without this, iPhones draw selects as white system buttons and desktop browsers show a white
+   option list. The arrow is our own so it matches on every platform. */
+select {
+  -webkit-appearance: none; appearance: none; cursor: pointer; color: var(--text);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%239aa3c0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center; background-size: 12px 12px;
+  padding-right: 32px !important;
+}
+select:hover { border-color: var(--edge-2); }
+select:focus { outline: none; border-color: rgba(34, 211, 238, .55); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+select option, select optgroup { background-color: #0d1020; color: #e8ecf8; }
+select::-ms-expand { display: none; }
+
+/* ---------- Loading screen ---------- */
+.splash.done { opacity: 0; visibility: hidden; transition: opacity .35s ease, visibility 0s linear .35s; }

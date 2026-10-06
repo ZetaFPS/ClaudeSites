@@ -156,7 +156,15 @@
     enterApp();
   });
 
+  // Fade out the loading screen once the first real screen (sign-in or the app) is ready.
+  function hideSplash() {
+    const sp = $('#splash');
+    if (!sp || sp.classList.contains('done')) return;
+    requestAnimationFrame(() => sp.classList.add('done'));
+    setTimeout(() => sp.remove(), 600);
+  }
   function showAuth(message) {
+    hideSplash();
     stopCamera();
     closeSheet();
     $('#app').hidden = true;
@@ -181,6 +189,7 @@
     $('#auth').hidden = true;
     $('#app').hidden = false;
     go('portfolio');
+    hideSplash();
     startListPolling();
     handleInviteLink();
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
