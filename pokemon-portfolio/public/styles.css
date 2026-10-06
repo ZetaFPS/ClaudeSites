@@ -1118,3 +1118,9 @@ select::-ms-expand { display: none; }
 .pack-grid .pc .p { font-size: 11px; font-weight: 600; }
 .pack-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 @media (prefers-reduced-motion: reduce) { .booster .sheen, .rcard .foil, .rcard.down.hit .rface.back { animation: none; } }
+
+/* Real booster pack photo (background cut away) */
+.booster.photo .skin.photo { background: none; overflow: visible; }
+.booster.photo .skin.photo img { width: 100%; height: 100%; display: block; }
+.booster.photo .skin.photo .sheen { -webkit-mask: var(--pack-mask); mask: var(--pack-mask); opacity: .35; }
+.booster.photo { width: auto; height: min(420px, 58vh); max-width: 70vw; }

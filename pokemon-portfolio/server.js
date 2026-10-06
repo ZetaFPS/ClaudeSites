@@ -304,6 +304,17 @@ async function api(req, res, url) {
     const list = packs.list();
     return send(res, 200, list ? { sets: list } : { loading: true, status: catalog.status() });
   }
+  // A photo of the set's real booster pack (404 → the app draws a pack instead).
+  const pi = pathname.match(/^\/api\/packs\/([A-Za-z0-9._-]{1,40})\/image$/);
+  if (pi && method === 'GET') {
+    const set = (packs.list() || []).find((x) => x.id === pi[1]);
+    if (!set) throw httpError(404, 'Unknown set.');
+    const u = await prices.boosterImage(set.name).catch(() => null);
+    if (!u || !prices.PC_IMG.test(u)) throw httpError(404, 'No pack photo.');
+    const hit = await fetchImage(new URL(u)).catch(() => null);
+    if (!hit) throw httpError(404, 'No pack photo.');
+    return sendImage(res, hit, 86400);
+  }
   const pk = pathname.match(/^\/api\/packs\/([A-Za-z0-9._-]{1,40})\/open$/);
   if (pk && method === 'POST') {
     limitApi(req);

@@ -51,7 +51,12 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   with a burst and holo shine for hits. Packs follow each era's real structure — WotC 11 cards
   (7C/3U/1 rare, holo ~1 in 3), EX 9 cards (5C/2U/reverse/rare), DP–Sword & Shield 10 cards
   (5C/3U/reverse/rare+), Scarlet & Violet 10 cards (4C/3U/2 holo slots incl. Illustration Rare
-  chances/rare+) — with approximate pull rates. The summary shows what the pack would be worth.
+  chances/rare+) — with approximate pull rates. Special sets follow their own real structure:
+  **30th Celebration** packs are 5 foil cards with exactly one of the 30 anniversary Pikachu, a
+  Rare Holo or Double Rare slot, and at most one hit per pack at the published odds (Double Rare
+  1/4, Illustration Rare 1/6, Classic Collection 1/11, SIR 1/20, Futuristic Rare 1/103, RGB 1/4000).
+  The pack shown is a photo of the set's real booster pack (from PriceCharting, background cut
+  away) when one is available. The summary shows what the pack would be worth.
   Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).

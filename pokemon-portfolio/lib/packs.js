@@ -51,6 +51,80 @@ function formatFor(released) {
 }
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+/* ---------------- special sets with their own pack structure ---------------- */
+// 30th Celebration (2026): 5 foil cards — 2 commons/uncommons; a 3rd common/uncommon or an
+// Illustration-Rare-or-better hit; a Rare Holo or Double Rare; and always 1 of the 30 Pikachu.
+// A pack has at most ONE hit, drawn with the published per-pack odds (≈43% of packs are
+// "Pikachu only"): Double Rare 1/4, Illustration Rare 1/6, Classic Collection 1/11,
+// Special Illustration Rare 1/20, Futuristic Rare 1/103, RGB 1/4000.
+const CEL30_HITS = [
+  ['DR', /double rare/, 1 / 4, 'X'],
+  ['SIR', /special illustration/, 1 / 20, 'S'],
+  ['IR', /illustration rare/, 1 / 6, 'I'],
+  ['CC', /classic collection/, 1 / 11, 'I'],
+  ['FUR', /futuristic/, 1 / 103, 'S'],
+  ['RGB', /\brgb\b|black star rare|gold/, 1 / 4000, 'S'],
+];
+function cel30Groups(cards) {
+  const rar = (c) => String(c.rarity || '').toLowerCase();
+  const hitOf = (c) => CEL30_HITS.find(([, re]) => re.test(rar(c)));
+  // The Pikachu slot: every plain "Pikachu" card, whatever its printed rarity (they are the 30
+  // anniversary Pikachu, which only come from this slot). "Pikachu ex" is a normal hit.
+  let pikachu = cards.filter((c) => /pikachu/.test(rar(c)) || (/^pikachu\b/i.test(c.name) && !/\bex\b/i.test(c.name)));
+  const isPika = new Set(pikachu.map((c) => c.id));
+  const g = { pikachu, cu: [], rare: [], hits: {} };
+  for (const c of cards) {
+    if (isPika.has(c.id)) continue;
+    const h = hitOf(c);
+    if (h) (g.hits[h[0]] ||= []).push(c);
+    else if (/^rare/.test(rar(c))) g.rare.push(c);
+    else if (!rar(c) || /common|uncommon/.test(rar(c))) g.cu.push(c);
+  }
+  return g;
+}
+function openCel30(cards) {
+  const g = cel30Groups(cards);
+  const roll = Math.random();
+  let acc = 0, hit = null;
+  for (const [key, , p] of CEL30_HITS) {
+    if (!g.hits[key]?.length) continue;
+    acc += p;
+    if (roll < acc) { hit = key; break; }
+  }
+  const tierOfHit = (k) => CEL30_HITS.find(([key]) => key === k)[3];
+  const used = new Set();
+  const draw = (pool) => {
+    let c = pick(pool);
+    for (let i = 0; i < 6 && used.has(c.id); i++) c = pick(pool);
+    used.add(c.id);
+    return c;
+  };
+  const out = [];
+  // Every card in this set is foil.
+  const add = (c, tier, extra = {}) => out.push({ c, pull: { tier, foil: true, hit: ['X', 'I', 'S'].includes(tier), ...extra } });
+  const cu = g.cu.length ? g.cu : g.rare;
+  add(draw(cu), 'C');
+  add(draw(cu), 'C');
+  const slot3Hit = hit && hit !== 'DR' ? hit : null;
+  if (!slot3Hit) add(draw(cu), 'C');
+  if (g.pikachu.length) add(draw(g.pikachu), 'H', { pikachu: true });
+  // Rare slot: the Double Rare if that's this pack's hit, otherwise a Rare Holo.
+  if (hit === 'DR') add(draw(g.hits.DR), 'X', { rare: true });
+  else if (g.rare.length) add(draw(g.rare), 'H', { rare: true });
+  // A bigger hit is saved for last.
+  if (slot3Hit) add(draw(g.hits[slot3Hit]), tierOfHit(slot3Hit), { rare: true });
+  return out;
+}
+const SPECIAL = [
+  {
+    match: (name) => /30th celebration/i.test(name),
+    format: {
+      era: '30th Celebration', size: 5, special: 'cel30',
+      note: '5 foil cards: 2 commons/uncommons, a 3rd common/uncommon or an Illustration Rare-or-better hit, 1 Rare Holo or Double Rare ex, and always 1 of the 30 Pikachu — at most one hit per pack (plus a foil Energy and code card)',
+    },
+  },
+];
 function pickTier(weights, byTier) {
   const options = Object.entries(weights).filter(([t]) => byTier[t]?.length);
   const total = options.reduce((a, [, w]) => a + w, 0);
@@ -82,13 +156,14 @@ function createPacks({ catalog }) {
       if (promo > 0.5 || /trainer kit|mcdonald|futsal|promo|energies|pop series/i.test(s0.setName) || (byTier.C?.length || 0) + (byTier.U?.length || 0) < 8) continue;
       // The pack art shows the set's biggest chase card.
       const chase = (byTier.S || byTier.I || byTier.X || byTier.H || byTier.R || cs).find((c) => c.img) || cs.find((c) => c.img);
+      const special = SPECIAL.find((sp) => sp.match(s0.setName));
       const set = {
         id, name: s0.setName, series: s0.series, released: s0.released, cards: cs.length,
         logo: `https://images.pokemontcg.io/${id}/logo.png`, art: chase?.alt || chase?.img || null,
-        format: formatFor(s0.released),
+        format: special ? special.format : formatFor(s0.released),
       };
       list.push(set);
-      byId.set(id, { set, byTier });
+      byId.set(id, { set, byTier, cards: cs });
     }
     list.sort((a, b) => String(b.released).localeCompare(String(a.released)) || a.name.localeCompare(b.name));
     setsCache = { list, byId, from: cards };
@@ -102,6 +177,8 @@ function createPacks({ catalog }) {
     const entry = s.byId.get(setId);
     if (!entry) return { error: 'unknown set' };
     const { set, byTier } = entry;
+    const pack = (cards) => ({ set: { id: set.id, name: set.name, released: set.released, logo: set.logo, format: { era: set.format.era, size: set.format.size, note: set.format.note } }, cards });
+    if (set.format.special === 'cel30') return pack(openCel30(entry.cards).map(({ c, pull }) => ({ ...liteCard(c), pull })));
     const out = [];
     const used = new Set();
     for (const [weights, count, opts = {}] of set.format.slots) {

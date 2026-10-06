@@ -1397,10 +1397,78 @@
     $('#packOpen').disabled = false;
     $('#packOpen').textContent = 'Open pack';
     packs.busy = false;
+    bindBooster();
+    window.scrollTo({ top: 0 });
+    // Swap in a photo of the real booster pack when there is one.
+    const photo = new Image();
+    photo.onload = () => {
+      if (packs.set !== st || packs.busy) return;
+      const cut = cutoutPack(photo);
+      if (cut) renderPhotoPack(st, cut);
+    };
+    photo.src = `/api/packs/${encodeURIComponent(st.id)}/image`;
+  }
+  function bindBooster() {
     const booster = $('#booster');
     booster.addEventListener('click', openPack);
     booster.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPack(); } });
-    window.scrollTo({ top: 0 });
+  }
+  // Product photos sit on a plain (usually white) background: flood-fill it away from the edges
+  // and trim, leaving just the pack. Returns null if the background isn't plain.
+  function cutoutPack(img) {
+    const W = img.naturalWidth, H = img.naturalHeight;
+    if (!W || !H) return null;
+    const sc = Math.min(1, 900 / Math.max(W, H));
+    const w = Math.round(W * sc), h = Math.round(H * sc);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(img, 0, 0, w, h);
+    let data;
+    try { data = x.getImageData(0, 0, w, h); } catch { return null; }
+    const d = data.data;
+    // Background colour = the edges' median; it has to be fairly uniform.
+    const edge = [];
+    for (let i = 0; i < w; i += 3) edge.push(i, (h - 1) * w + i);
+    for (let j = 0; j < h; j += 3) edge.push(j * w, j * w + w - 1);
+    const med = (k) => edge.map((p) => d[p * 4 + k]).sort((a, b) => a - b)[edge.length >> 1];
+    const bg = [med(0), med(1), med(2)];
+    const dist = (p) => Math.abs(d[p * 4] - bg[0]) + Math.abs(d[p * 4 + 1] - bg[1]) + Math.abs(d[p * 4 + 2] - bg[2]);
+    if (edge.filter((p) => dist(p) < 40).length < edge.length * 0.7) return null;
+    const seen = new Uint8Array(w * h);
+    const stack = edge.filter((p) => dist(p) < 40);
+    for (const p of stack) seen[p] = 1;
+    while (stack.length) {
+      const p = stack.pop();
+      d[p * 4 + 3] = 0;
+      const px = p % w, py = (p / w) | 0;
+      for (const q of [px > 0 ? p - 1 : -1, px < w - 1 ? p + 1 : -1, py > 0 ? p - w : -1, py < h - 1 ? p + w : -1]) {
+        if (q >= 0 && !seen[q] && dist(q) < 40) { seen[q] = 1; stack.push(q); }
+      }
+    }
+    // Trim to what's left.
+    let x0 = w, y0 = h, x1 = -1, y1 = -1, kept = 0;
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (d[(j * w + i) * 4 + 3]) { kept++; if (i < x0) x0 = i; if (i > x1) x1 = i; if (j < y0) y0 = j; if (j > y1) y1 = j; }
+    if (kept < w * h * 0.2 || x1 - x0 < 40 || y1 - y0 < 60) return null;
+    x.putImageData(data, 0, 0);
+    const out = document.createElement('canvas');
+    out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+    out.getContext('2d').drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    const aspect = out.width / out.height;
+    if (aspect < 0.35 || aspect > 0.95) return null; // not pack-shaped
+    return { url: out.toDataURL('image/png'), aspect };
+  }
+  function renderPhotoPack(st, cut) {
+    const tear = Array.from({ length: 19 }, (_, i) => `${(i / 18 * 100).toFixed(2)}% ${(11 + (i % 2 ? 0.6 : -0.4) + Math.random() * 0.4).toFixed(2)}%`);
+    const topClip = ['0% 0%', '100% 0%', ...tear.slice().reverse()].join(',');
+    const mainClip = [...tear, '100% 100%', '0% 100%'].join(',');
+    const skin = `<div class="skin photo"><img src="${cut.url}" alt=""><div class="sheen"></div></div>`;
+    $('#boosterWrap').innerHTML = `<div class="booster photo" id="booster" role="button" tabindex="0" aria-label="Open the ${esc(st.name)} booster pack" style="aspect-ratio:${cut.aspect.toFixed(4)};--pack-mask:url('${cut.url}') center / 100% 100% no-repeat">
+        <div class="piece main" style="clip-path:polygon(${mainClip})">${skin}</div>
+        <div class="piece top" style="clip-path:polygon(${topClip})">${skin}</div>
+        <div class="tearline" style="top:11%"></div>
+      </div>`;
+    bindBooster();
   }
   // Tilt the pack toward the pointer.
   $('#boosterWrap').addEventListener('pointermove', (e) => {
@@ -1456,7 +1524,7 @@
       // Suspense: the rare slot and any big hit start face-down and flip on tap.
       const down = t.rare || ['I', 'S'].includes(t.tier);
       const url = c.images?.large || c.images?.small;
-      return `<div class="rcard enter t-${t.tier} ${t.reverse ? 'rev' : ''} ${t.hit ? 'hit' : ''} ${down ? 'down' : ''}" data-ri="${i}" style="z-index:${n - i}">
+      return `<div class="rcard enter t-${t.tier} ${t.reverse || t.foil ? 'rev' : ''} ${t.hit ? 'hit' : ''} ${down ? 'down' : ''}" data-ri="${i}" style="z-index:${n - i}">
           <div class="rcard-inner">
             <div class="rface front"><img ${imgAttrs({ id: c.id, images: { small: url, large: url } }, 'large')} alt="${esc(c.name)}"><div class="foil"></div></div>
             <div class="rface back"><span class="ball"></span></div>
@@ -1482,7 +1550,7 @@
     const t = c.pull || {};
     const cap = $('#revealCap');
     cap.classList.toggle('hidden', down);
-    cap.innerHTML = `<b>${esc(c.name)}</b><span>${esc(c.rarity || 'Common')}${t.reverse ? '<i class="tag">Reverse Holo</i>' : ''}${t.hit || t.tier === 'H' ? `<i class="tag ${t.hit ? 'hit' : ''}">${esc(TIER_NAMES[t.tier] || 'Rare')}</i>` : ''}</span>`;
+    cap.innerHTML = `<b>${esc(c.name)}</b><span>${esc(c.rarity || 'Common')}${t.reverse ? '<i class="tag">Reverse Holo</i>' : ''}${t.pikachu ? '<i class="tag hit">Anniversary Pikachu</i>' : ''}${(t.hit || t.tier === 'H') && !t.pikachu ? `<i class="tag ${t.hit ? 'hit' : ''}">${esc(TIER_NAMES[t.tier] || 'Rare')}</i>` : ''}</span>`;
     $('#revealHint').textContent = down ? (t.rare ? 'Your rare card — tap to flip it!' : 'Something special… tap to flip') : packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
   }
   function advanceReveal() {

@@ -647,6 +647,49 @@ async function fullPrices(id, variant) {
   return { raw, graded, gradedError: pc?.error || null };
 }
 
+/* ---------------- Booster pack photos (pack simulator) ---------------- */
+// The set's sealed "Booster Pack" product on PriceCharting carries a photo of the real pack.
+const PC_IMG = /^https:\/\/(storage\.googleapis\.com\/images\.pricecharting\.com\/|www\.pricecharting\.com\/)/;
+function packImageFrom(html) {
+  const og = html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+  const gcs = html.match(/https:\/\/storage\.googleapis\.com\/images\.pricecharting\.com\/[A-Za-z0-9/_.-]+\.(?:jpe?g|png|webp)/i);
+  for (const u of [gcs?.[0], og?.[1]]) {
+    if (!u) continue;
+    const url = u.replace(/&amp;/g, '&');
+    if (PC_IMG.test(url) && !/logo|favicon|default/i.test(url)) return url;
+  }
+  return null;
+}
+function boosterImage(setName) {
+  return cached(`packimg:${slug(setName)}`, 7 * 24 * HOUR, async () => {
+    // Direct product URLs first (PriceCharting names the set's console "Pokemon <Set>").
+    const consoles = [...new Set([
+      `pokemon-${slug(setName)}`,
+      `pokemon-${String(setName).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9&]+/g, '-').replace(/^-+|-+$/g, '')}`,
+    ])];
+    for (const c of consoles) {
+      try {
+        const { url, html } = await pcFetchPage(`${PC}/game/${c}/booster-pack`);
+        if (/\/booster-pack(?:$|[?#])/.test(new URL(url).pathname)) {
+          const img = packImageFrom(html);
+          if (img) return img;
+        }
+      } catch (e) {
+        if (!/responded 404/.test(e.message)) throw e;
+      }
+    }
+    // Otherwise search for it.
+    const { url, html } = await pcFetchPage(`${PC}/search-products?type=prices&q=${encodeURIComponent(`${setName} booster pack`)}`);
+    if (/\/game\/[^/]+\/booster-pack/.test(new URL(url).pathname)) return packImageFrom(html);
+    const link = [...html.matchAll(/href=["'](?:https?:\/\/www\.pricecharting\.com)?\/game\/([a-z0-9\-&%]+)\/booster-pack["']/gi)]
+      .map((m) => decodeURIComponent(m[1]))
+      .find((c) => !/japanese|chinese|korean/.test(c) && setMatches(setName, c.replace(/^pokemon-/, '')));
+    if (!link) return null;
+    return packImageFrom((await pcFetchPage(`${PC}/game/${link}/booster-pack`)).html);
+  });
+}
+
 /* ---------------- Card images: fallback sources ---------------- */
 // Every place a card's picture might live, best first: the card's own image, the other size,
 // the Pokémon TCG API's predictable URLs, and TCGdex's copy (webp, png or jpg).
@@ -688,6 +731,6 @@ async function imageCandidates(id, size = 'small') {
 }
 
 module.exports = {
-  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, parseId,
-  _test: { scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
+  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, parseId, boosterImage, PC_IMG,
+  _test: { packImageFrom, scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
 };
