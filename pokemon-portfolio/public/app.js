@@ -1316,7 +1316,7 @@
   // to the collection. Packs are built on the server with each era's real slot structure.
   const packs = { sets: null, set: null, cards: [], i: 0, busy: false, retry: null };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const TIER_NAMES = { H: 'Holo Rare', X: 'Hit!', I: 'Illustration hit!', S: 'Secret rare!' };
+  const TIER_NAMES = { H: 'Holo Rare', X: 'Hit!', I: 'Illustration hit!', S: 'Special hit!', HR: 'Gold / secret rare!' };
   function openPacksView() {
     if (!packs.sets) loadPackSets();
   }
@@ -1394,9 +1394,8 @@
         <div class="tearline"></div>
       </div>`;
     $('#packNote').textContent = `${st.name} · ${st.note}`;
-    $('#packOpen').disabled = false;
-    $('#packOpen').textContent = 'Open pack';
     packs.busy = false;
+    checkPackReady(st);
     bindBooster();
     window.scrollTo({ top: 0 });
     // Swap in a photo of the real booster pack when there is one.
@@ -1407,6 +1406,34 @@
       if (cut) renderPhotoPack(st, cut);
     };
     photo.src = `/api/packs/${encodeURIComponent(st.id)}/image`;
+  }
+  // Packs are only opened once the set's real rarity data is in (new sets sometimes need it
+  // fetched first), and the info panel shows what the set's packs draw from.
+  async function checkPackReady(st) {
+    const btn = $('#packOpen');
+    clearTimeout(packs.readyTimer);
+    let info;
+    try { info = await api(`/api/packs/${encodeURIComponent(st.id)}/info`); } catch { info = { ready: true }; }
+    if (packs.set !== st) return;
+    if (info.rarities) {
+      const order = Object.entries(info.rarities).sort((a, b) => b[1] - a[1]);
+      $('#packInfoBody').innerHTML = `<p>${esc(info.note || '')}</p>
+        <p class="muted">This set’s cards by rarity${info.subset ? ` (including the ${esc(info.subset.label)} subset)` : ''}:</p>
+        <ul class="rar-list">${order.map(([r, n]) => `<li><span>${esc(r)}</span><b class="num">${n}</b></li>`).join('')}</ul>`;
+      $('#packInfo').hidden = false;
+    }
+    if (info.ready) {
+      btn.disabled = false;
+      btn.textContent = 'Open pack';
+    } else if (info.error) {
+      btn.disabled = true;
+      btn.textContent = 'Not available yet';
+      $('#packNote').textContent = 'Rarity data for this set isn’t available yet, so its packs can’t be simulated accurately. Try again later.';
+    } else {
+      btn.disabled = true;
+      btn.textContent = 'Getting this set’s card rarities…';
+      packs.readyTimer = setTimeout(() => { if (packs.set === st && !$('#packStage').hidden) checkPackReady(st); }, 2500);
+    }
   }
   function bindBooster() {
     const booster = $('#booster');
@@ -1494,10 +1521,11 @@
     let pack;
     try {
       [pack] = await Promise.all([req, sleep(560)]);
+      if (pack.preparing) { b.classList.remove('shake'); packs.busy = false; checkPackReady(packs.set); return; }
       if (pack.loading || !pack.cards?.length) throw new Error('not ready');
     } catch (e) {
       b.classList.remove('shake');
-      toast(e.status === 429 ? e.message : 'Couldn’t open that pack — try again');
+      toast(e.status === 429 || e.status === 503 ? e.message : 'Couldn’t open that pack — try again');
       packs.busy = false;
       $('#packOpen').disabled = false;
       $('#packOpen').textContent = 'Open pack';

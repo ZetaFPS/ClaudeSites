@@ -1092,7 +1092,7 @@ select::-ms-expand { display: none; }
 .rcard.hit:not(.down) .rface.front { box-shadow: 0 0 0 2px var(--glow), 0 0 60px 8px var(--glow), 0 20px 50px rgba(0, 0, 0, .65); }
 .rcard.down.hit .rface.back { box-shadow: 0 0 40px 6px var(--glow), 0 20px 50px rgba(0, 0, 0, .65); animation: back-pulse 1.2s ease-in-out infinite; }
 @keyframes back-pulse { 50% { box-shadow: 0 0 70px 14px var(--glow), 0 20px 50px rgba(0, 0, 0, .65); } }
-.t-H { --glow: rgba(226, 232, 240, .55); } .t-X { --glow: rgba(34, 211, 238, .7); } .t-I { --glow: rgba(192, 132, 252, .75); } .t-S { --glow: rgba(251, 191, 36, .85); }
+.t-H { --glow: rgba(226, 232, 240, .55); } .t-X { --glow: rgba(34, 211, 238, .7); } .t-I { --glow: rgba(192, 132, 252, .75); } .t-S { --glow: rgba(244, 114, 182, .85); } .t-HR { --glow: rgba(251, 191, 36, .9); }
 .burst { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; pointer-events: none; z-index: 5;
   box-shadow: 0 0 0 0 var(--glow); animation: burst 1s ease-out forwards; }
 @keyframes burst { 0% { transform: scale(1); box-shadow: 0 0 0 0 var(--glow), 0 0 0 0 var(--glow); opacity: 1; } 100% { transform: scale(60); box-shadow: 0 0 0 2px transparent, 0 0 30px 6px transparent; opacity: 0; } }
@@ -1124,3 +1124,10 @@ select::-ms-expand { display: none; }
 .booster.photo .skin.photo img { width: 100%; height: 100%; display: block; }
 .booster.photo .skin.photo .sheen { -webkit-mask: var(--pack-mask); mask: var(--pack-mask); opacity: .35; }
 .booster.photo { width: auto; height: min(420px, 58vh); max-width: 70vw; }
+
+.pack-info { width: 100%; max-width: 440px; border-radius: 14px; padding: 4px 14px; font-size: 13px; }
+.pack-info summary { cursor: pointer; padding: 8px 0; font-weight: 600; color: var(--text-2); }
+.pack-info p { margin: 6px 0; color: var(--text-2); }
+.rar-list { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+.rar-list li { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--edge); padding: 3px 0; }
+.rar-list span { color: var(--text-2); }

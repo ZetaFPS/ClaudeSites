@@ -228,7 +228,14 @@ function createCatalog({ store, log = console } = {}) {
     return out;
   }
 
-  return { get, peek, refresh, status, query };
+  // Save a list after its cards were updated in place (e.g. rarities filled in for a new set).
+  async function persist(lang) {
+    if (!lists[lang]) return;
+    version++;
+    await store.setKv?.(`catalog-${lang}`, lists[lang]).catch((e) => log.warn?.(`catalogue: couldn't save ${lang}: ${e.message}`));
+  }
+
+  return { get, peek, refresh, status, query, persist };
 }
 
 module.exports = { createCatalog, liteCard, rarityRank, _test: { englishCatalog, tcgdexCatalog, SORTS } };

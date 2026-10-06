@@ -51,7 +51,15 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   with a burst and holo shine for hits. Packs follow each era's real structure — WotC 11 cards
   (7C/3U/1 rare, holo ~1 in 3), EX 9 cards (5C/2U/reverse/rare), DP–Sword & Shield 10 cards
   (5C/3U/reverse/rare+), Scarlet & Violet 10 cards (4C/3U/2 holo slots incl. Illustration Rare
-  chances/rare+) — with approximate pull rates. Special sets follow their own real structure:
+  chances/rare+), e-Card 9 cards (with a reverse holo) — at published pull rates where known
+  (e.g. Scarlet & Violet: Double Rare ~1/4, IR ~1/12, SIR ~1/86, Hyper Rare ~1/150). A pack always
+  has exactly its stated number of cards. Packs are only built from real rarity data: when a new
+  set's cards arrive without rarities, they're fetched card by card from TCGdex (and saved) before
+  the set can be opened. Subsets the card database lists separately are merged into their parent
+  set at their real rate (Hidden/Shining Fates Shiny Vault ~1/3, Crown Zenith Galarian Gallery
+  ~3/8, Trainer Gallery ~1/7). *What's in this pack* shows each set's actual rarity counts.
+  Special sets follow their own real structure — **Celebrations**: 4 holo cards with a Classic
+  Collection or V/VMAX in ~1 in 3 packs;
   **30th Celebration** packs are 5 foil cards with exactly one of the 30 anniversary Pikachu, a
   Rare Holo or Double Rare slot, and at most one hit per pack at the published odds (Double Rare
   1/4, Illustration Rare 1/6, Classic Collection 1/11, SIR 1/20, Futuristic Rare 1/103, RGB 1/4000).

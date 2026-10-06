@@ -319,9 +319,19 @@ async function api(req, res, url) {
   if (pk && method === 'POST') {
     limitApi(req);
     const pack = packs.open(pk[1]);
-    if (!pack) return send(res, 200, { loading: true, status: catalog.status() });
+    if (pack.loading) return send(res, 200, { loading: true, status: catalog.status() });
+    if (pack.preparing) return send(res, 200, { preparing: true });
+    if (pack.error === 'no-rarities') throw httpError(503, 'Rarity data for this set isn’t available yet, so its packs can’t be simulated accurately. Try again later.');
     if (pack.error) throw httpError(404, 'That set has no booster packs.');
     return send(res, 200, pack);
+  }
+  // What a set's packs contain (and whether its rarity data is ready).
+  const pf = pathname.match(/^\/api\/packs\/([A-Za-z0-9._-]{1,40})\/info$/);
+  if (pf && method === 'GET') {
+    limitApi(req);
+    const info = packs.info(pf[1]);
+    if (info.error === 'unknown set') throw httpError(404, 'Unknown set.');
+    return send(res, 200, info);
   }
 
   // --- full price breakdown for one card (raw + graded) ---
