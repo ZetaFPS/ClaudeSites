@@ -739,6 +739,68 @@
     return found;
   }
 
+  // Crinkles and cracks: short, jagged creases from bending, where the ink cracks and the white
+  // paper core shows. Found as thin, sharp lines that are much brighter than the print right next
+  // to them on BOTH sides (within 0.3 mm) and close to colourless, like bare paper.
+  //   zone(x, y) → 'border' | 'art' | null says where to look:
+  //   • border: the plain border band, where any such line is damage (even a short one).
+  //   • art: inside the design, only with the official image (ref): the line must be much brighter
+  //     than the official image there and not one of its own printed lines.
+  function cracks(px, zone, ref) {
+    const L = new Float32Array(CW * CH);
+    const sat = new Uint8Array(CW * CH);
+    for (let i = 0; i < CW * CH; i++) {
+      const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+      L[i] = lumOf(r, g, b);
+      sat[i] = Math.max(r, g, b) - Math.min(r, g, b);
+    }
+    const inset = 8, hw = CW / 2;
+    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    const mask = new Uint8Array(CW * CH); // 1 = border crack pixel, 2 = artwork crack pixel
+    for (let y = inset; y < CH - inset; y++) for (let x = inset; x < CW - inset; x++) {
+      const z = zone(x, y);
+      if (!z) continue;
+      const i = y * CW + x;
+      const v = L[i];
+      const T = z === 'border' ? 40 : 45;
+      if (z === 'border' ? (v < 100 || sat[i] > 80) : (v < 140 || sat[i] > 55)) continue;
+      if (z === 'art') {
+        const h = (y >> 1) * hw + (x >> 1);
+        if (!ref || ref.known[h] || v - lumOf(ref.px[i * 4], ref.px[i * 4 + 1], ref.px[i * 4 + 2]) < 45) continue;
+      }
+      search: for (const d of [2, 3]) for (const [dx, dy] of dirs) {
+        if (v - L[i + dy * d * CW + dx * d] > T && v - L[i - dy * d * CW - dx * d] > T) { mask[i] = z === 'border' ? 1 : 2; break search; }
+      }
+    }
+    const seen = new Uint8Array(CW * CH);
+    const found = [];
+    for (let i = 0; i < CW * CH; i++) {
+      if (!mask[i] || seen[i]) continue;
+      const stack = [i];
+      seen[i] = 1;
+      let n = 0, nb = 0, x0 = CW, y0 = CH, x1 = 0, y1 = 0;
+      while (stack.length) {
+        const q = stack.pop(), qx = q % CW, qy = (q / CW) | 0;
+        n++;
+        if (mask[q] === 1) nb++;
+        if (qx < x0) x0 = qx; if (qx > x1) x1 = qx; if (qy < y0) y0 = qy; if (qy > y1) y1 = qy;
+        // bridge 1 px gaps (a crack's brightness varies along it)
+        for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++) {
+          const nx = qx + ox, ny = qy + oy;
+          if (nx < 0 || ny < 0 || nx >= CW || ny >= CH) continue;
+          const k = ny * CW + nx;
+          if (mask[k] && !seen[k]) { seen[k] = 1; stack.push(k); }
+        }
+      }
+      const extent = Math.hypot(x1 - x0 + 1, y1 - y0 + 1);
+      const inBorder = nb >= n / 2;
+      // Long enough to be a crack (shorter allowed in the plain border), and thin — a line, not a patch.
+      if (extent >= (inBorder ? 1.2 : 2.5) * MM && n >= 8 && n <= extent * 7) found.push({ x0, y0, x1, y1, lengthMm: extent / MM, border: inBorder });
+    }
+    found.sort((a, b) => b.lengthMm - a.lengthMm);
+    return { marks: found.slice(0, 40), totalMm: found.reduce((a, c) => a + c.lengthMm, 0) };
+  }
+
   function glare(px) {
     let hot = 0, n = 0;
     for (let y = 30; y < CH - 30; y += 2) for (let x = 30; x < CW - 30; x += 2) {
@@ -942,10 +1004,20 @@
     let cr = { found: false };
     if (label === 'back') cr = creases(px, { logoBands: true });
     else if (ref?.ok) cr = creases(px, { known: ref.known, refPx: ref.px });
+    // Crinkles: in the plain border band on both sides; inside the artwork of the front only when
+    // the official image can tell the design's own thin bright lines apart from cracks. (The back's
+    // swirl is full of thin white streaks, so its artwork isn't checked this way.)
+    const zone = (x, y) => {
+      if (Math.min(x, CW - 1 - x) < 3.5 * MM && Math.min(y, CH - 1 - y) < 3.5 * MM) return null; // corners: graded as corners
+      const b = (k, d) => border[k] != null && d < border[k] * MM - 3;
+      if (b('left', x) || b('right', CW - 1 - x) || b('top', y) || b('bottom', CH - 1 - y)) return 'border';
+      return label === 'front' && ref?.ok ? 'art' : null;
+    };
+    const ck = cracks(px, zone, ref?.ok ? ref : null);
     const sp = spots(px, border);
     if (ref?.ok) sp.push(...surfaceMarks(px, ref).slice(0, 8));
     const gl = glare(px);
-    return { label, loc, border, centeringFrom, edges: ed, corners: co, crease: cr, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff, centering: ref.centering || null } };
+    return { label, loc, border, centeringFrom, edges: ed, corners: co, crease: cr, cracks: ck, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff, centering: ref.centering || null } };
   }
 
   // opts.reference: the official image of the card (an <img> or bitmap), for the front.
@@ -996,12 +1068,18 @@
     const creaseSide = [back, front].find((s) => s?.crease?.found) || null;
     const crease = creaseSide ? creaseSide.crease : null;
     if (crease) surfaceGrade = Math.min(surfaceGrade, crease.strength > 0.8 && crease.lengthMm > 30 ? 4 : 5);
+    // Crinkles / cracks: graded by their total length.
+    const crackMm = sides.reduce((a, s) => a + (s.cracks?.totalMm || 0), 0);
+    const crackN = sides.reduce((a, s) => a + (s.cracks?.marks.length || 0), 0);
+    const crinkled = crackN >= 2 || crackMm >= 3;
+    if (crinkled) surfaceGrade = Math.min(surfaceGrade, crackMm < 6 ? 6 : crackMm < 15 ? 5 : crackMm < 40 ? 4 : 3);
+    else if (crackN === 1) surfaceGrade = Math.min(surfaceGrade, 8);
 
     const subs = { centering: centeringGrade, corners: cornersGrade, edges: edgesGrade, surface: surfaceGrade };
     const counted = Object.values(subs).filter((v) => v != null);
     let overall = Math.min(Math.round(counted.reduce((a, b) => a + b, 0) / counted.length), Math.floor(Math.min(...counted)) + 1);
     if (centeringGrade != null) overall = Math.min(overall, centeringGrade); // PSA caps a grade by its centering
-    if (crease) overall = Math.min(overall, surfaceGrade + 1);
+    if (crease || crinkled) overall = Math.min(overall, surfaceGrade + 1);
     overall = clamp(overall, 1, 10);
 
     // Findings, in plain words.
@@ -1021,6 +1099,12 @@
     else {
       const faint = [back, front].find((s) => s?.crease?.faint);
       if (faint) findings.push({ level: 'info', text: `A faint straight line (~${faint.crease.lengthMm.toFixed(0)} mm) on the ${faint.label} could be a light crease or part of the printed design — tilt the card under a light to check. Not counted against the grade.` });
+    }
+    if (crackN) {
+      const where = sides.filter((s) => s.cracks?.marks.length).map((s) => s.label).join(' and ');
+      findings.push(crinkled
+        ? { level: 'bad', text: `Creasing / crinkles on the ${where}: ${crackN} white crack line${crackN === 1 ? '' : 's'} where the paper shows through (~${Math.round(crackMm)} mm in total)` }
+        : { level: 'warn', text: `A small white line on the ${where} — a light crinkle or scratch (~${crackMm.toFixed(1)} mm)` });
     }
     for (const p of allSpots.slice(0, 6)) findings.push({ level: p.areaMm2 > 2 ? 'bad' : 'warn', text: p.surface ? `Mark or stain on the ${p.side} surface that isn’t on the official card image (~${p.areaMm2.toFixed(1)} mm²)` : `Spot or stain on the ${p.side} border (~${p.areaMm2.toFixed(1)} mm²)` });
     if (front.reference?.ok) findings.push({ level: 'info', text: `Front compared with the official card image (${Math.round(front.reference.match * 100)}% match) — the card’s own artwork and printed lines are ignored, so only differences count` });
@@ -1094,6 +1178,7 @@
     }
     x.strokeStyle = 'rgba(251, 191, 36, .95)';
     x.lineWidth = 3;
+    for (const c of s.cracks?.marks || []) x.strokeRect(c.x0 - 6, c.y0 - 6, c.x1 - c.x0 + 12, c.y1 - c.y0 + 12);
     for (const p of s.spots) { x.beginPath(); x.arc(p.x, p.y, Math.max(10, Math.sqrt(p.areaMm2) * MM), 0, Math.PI * 2); x.stroke(); }
   }
 

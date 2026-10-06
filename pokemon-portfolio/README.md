@@ -63,6 +63,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
     front can't be measured, centering is shown as "—" and left out of the grade (never assumed 10)
   - *Edges*: whitening/chipping along each edge
   - *Corners*: wear and dings (compared with the card's die-cut corner shape)
+  - *Crinkles*: short, jagged white crack lines where bending has cracked the ink and the paper
+    shows through — thin, sharp, near-colourless lines that are much brighter than the print right
+    next to them. Checked in the plain border band of both sides (where any such line is damage),
+    and in the front's artwork when the card is selected (lines not in the official image). Graded
+    by their total length; a single short line is noted as a light crinkle or scratch
   - *Surface*: creases (long, straight, continuous thin lines on the back — curved or broken design
     lines are rejected, and so are outlines of printed shapes such as the POKéMON logo, which have
     different colours on each side while a crease cuts through the design; 18–30 mm lines are only
