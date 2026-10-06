@@ -448,6 +448,10 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.goto === view && ('focusSearch' in t.dataset) === focusSearch));
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
+    // On phones, Leaders/Groups/Grade/Search live under "More": highlight it when one is open.
+    $('#moreBtn').classList.toggle('active', ['leaders', 'groups', 'grade'].includes(view) || (view === 'scan' && focusSearch));
+    $$('#moreMenu [data-goto]').forEach((b) => b.classList.toggle('active', b.dataset.goto === view && ('focusSearch' in b.dataset) === focusSearch));
+    closeMore();
     if (view !== 'scan' || focusSearch) stopCamera();
     else if (!stream) startCamera();
     if (view === 'scan' && !focusSearch) refreshIndexNote();
@@ -467,6 +471,22 @@
     const g = e.target.closest('[data-goto]');
     if (g) go(g.dataset.goto, { focusSearch: 'focusSearch' in g.dataset });
   });
+
+  /* ---------- "More" menu (phones) ---------- */
+  function closeMore() {
+    $('#moreMenu').hidden = true;
+    $('#moreBtn').setAttribute('aria-expanded', 'false');
+  }
+  $('#moreBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = $('#moreMenu').hidden;
+    $('#moreMenu').hidden = !open;
+    $('#moreBtn').setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', (e) => {
+    if (!$('#moreMenu').hidden && !e.target.closest('#moreMenu, #moreBtn')) closeMore();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMore(); });
 
   /* ================= Portfolio ================= */
   let chartRange = 30;
@@ -1440,8 +1460,9 @@
     booster.addEventListener('click', openPack);
     booster.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPack(); } });
   }
-  // Product photos sit on a plain (usually white) background: flood-fill it away from the edges
-  // and trim, leaving just the pack. Returns null if the background isn't plain.
+  // Official artwork usually has a transparent background (just trimmed); product photos sit on a
+  // plain (usually white) background, which is flood-filled away from the edges. A photo whose
+  // background can't be removed cleanly is used as it is.
   function cutoutPack(img) {
     const W = img.naturalWidth, H = img.naturalHeight;
     if (!W || !H) return null;
@@ -1458,10 +1479,13 @@
     const edge = [];
     for (let i = 0; i < w; i += 3) edge.push(i, (h - 1) * w + i);
     for (let j = 0; j < h; j += 3) edge.push(j * w, j * w + w - 1);
+    const asIs = { url: img.src, aspect: W / H };
+    const transparent = edge.filter((p) => d[p * 4 + 3] < 20).length > edge.length * 0.6;
     const med = (k) => edge.map((p) => d[p * 4 + k]).sort((a, b) => a - b)[edge.length >> 1];
     const bg = [med(0), med(1), med(2)];
-    const dist = (p) => Math.abs(d[p * 4] - bg[0]) + Math.abs(d[p * 4 + 1] - bg[1]) + Math.abs(d[p * 4 + 2] - bg[2]);
-    if (edge.filter((p) => dist(p) < 40).length < edge.length * 0.7) return null;
+    // (With a transparent background only see-through pixels are removed — never dark parts of the pack.)
+    const dist = (p) => (d[p * 4 + 3] < 20 ? 0 : transparent ? 999 : Math.abs(d[p * 4] - bg[0]) + Math.abs(d[p * 4 + 1] - bg[1]) + Math.abs(d[p * 4 + 2] - bg[2]));
+    if (!transparent && edge.filter((p) => dist(p) < 40).length < edge.length * 0.7) return asIs.aspect > 0.35 && asIs.aspect < 0.95 ? asIs : null;
     const seen = new Uint8Array(w * h);
     const stack = edge.filter((p) => dist(p) < 40);
     for (const p of stack) seen[p] = 1;
@@ -1476,7 +1500,7 @@
     // Trim to what's left.
     let x0 = w, y0 = h, x1 = -1, y1 = -1, kept = 0;
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (d[(j * w + i) * 4 + 3]) { kept++; if (i < x0) x0 = i; if (i > x1) x1 = i; if (j < y0) y0 = j; if (j > y1) y1 = j; }
-    if (kept < w * h * 0.2 || x1 - x0 < 40 || y1 - y0 < 60) return null;
+    if (kept < w * h * 0.2 || x1 - x0 < 40 || y1 - y0 < 60) return asIs.aspect > 0.35 && asIs.aspect < 0.95 ? asIs : null;
     x.putImageData(data, 0, 0);
     const out = document.createElement('canvas');
     out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
@@ -1549,8 +1573,8 @@
     const stage = $('#revealStage');
     stage.innerHTML = pack.cards.map((c, i) => {
       const t = c.pull || {};
-      // Suspense: the rare slot and any big hit start face-down and flip on tap.
-      const down = t.rare || ['I', 'S'].includes(t.tier);
+      // Suspense: a hit arrives face-down and flips by itself, slower than the other cards.
+      const down = !!t.hit;
       const url = c.images?.large || c.images?.small;
       return `<div class="rcard enter t-${t.tier} ${t.reverse || t.foil ? 'rev' : ''} ${t.hit ? 'hit' : ''} ${down ? 'down' : ''}" data-ri="${i}" style="z-index:${n - i}">
           <div class="rcard-inner">
@@ -1579,22 +1603,25 @@
     const cap = $('#revealCap');
     cap.classList.toggle('hidden', down);
     cap.innerHTML = `<b>${esc(c.name)}</b><span>${esc(c.rarity || 'Common')}${t.reverse ? '<i class="tag">Reverse Holo</i>' : ''}${t.pikachu ? '<i class="tag hit">Anniversary Pikachu</i>' : ''}${(t.hit || t.tier === 'H') && !t.pikachu ? `<i class="tag ${t.hit ? 'hit' : ''}">${esc(TIER_NAMES[t.tier] || 'Rare')}</i>` : ''}</span>`;
-    $('#revealHint').textContent = down ? (t.rare ? 'Your rare card — tap to flip it!' : 'Something special… tap to flip') : packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
+    $('#revealHint').textContent = down ? 'Something special…' : packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
+    if (down && !el.dataset.flipping) {
+      el.dataset.flipping = '1';
+      setTimeout(() => revealHit(el), 1500);
+    }
+  }
+  function revealHit(el) {
+    if (!el.isConnected || $('#reveal').hidden) return;
+    el.classList.remove('down');
+    const burst = document.createElement('span');
+    burst.className = `burst t-${packs.cards[+el.dataset.ri].pull.tier}`;
+    $('#revealStage').append(burst);
+    setTimeout(() => burst.remove(), 1100);
+    setTimeout(updateReveal, 900);
   }
   function advanceReveal() {
     const el = currentCardEl();
     if (!el) return finishReveal();
-    if (el.classList.contains('down')) {
-      el.classList.remove('down');
-      if (el.classList.contains('hit')) {
-        const burst = document.createElement('span');
-        burst.className = `burst t-${packs.cards[packs.i].pull.tier}`;
-        $('#revealStage').append(burst);
-        setTimeout(() => burst.remove(), 1100);
-      }
-      setTimeout(updateReveal, 250);
-      return;
-    }
+    if (el.classList.contains('down')) return; // a hit is revealing itself
     el.classList.add('gone');
     packs.i++;
     if (packs.i >= packs.cards.length) setTimeout(finishReveal, 420);
@@ -2097,9 +2124,12 @@
     try {
       const res = await api('/api/groups');
       groups = res.groups;
-      const badge = $('#groupsBadge');
-      badge.hidden = !res.unread;
-      badge.textContent = res.unread > 99 ? '99+' : res.unread;
+      // Unread messages: on the Groups tab, and (on phones) on More and inside its menu.
+      for (const id of ['#groupsBadge', '#moreBadge', '#moreGroupsBadge']) {
+        const badge = $(id);
+        badge.hidden = !res.unread;
+        badge.textContent = res.unread > 99 ? '99+' : res.unread;
+      }
       if ($('#view-groups').classList.contains('active')) renderGroupList();
     } catch (e) {
       if (e.status === 401) signedOut('Your session expired — please sign in again.');

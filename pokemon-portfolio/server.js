@@ -309,6 +309,18 @@ async function api(req, res, url) {
   if (pi && method === 'GET') {
     const set = (packs.list() || []).find((x) => x.id === pi[1]);
     if (!set) throw httpError(404, 'Unknown set.');
+    // 1. Official booster artwork from TCGdex — one of the set's pack designs at random.
+    const designs = (await packs.boosterArt(set.id).catch(() => [])).sort(() => Math.random() - 0.5);
+    for (const candidates of designs) {
+      for (const c of candidates) {
+        let target;
+        try { target = new URL(c); } catch { continue; }
+        if (target.protocol !== 'https:' || !IMG_HOSTS.has(target.hostname)) continue;
+        const hit = await fetchImage(target).catch(() => null);
+        if (hit) return sendImage(res, hit, designs.length > 1 ? 0 : 86400);
+      }
+    }
+    // 2. A photo of the sealed pack from PriceCharting.
     const u = await prices.boosterImage(set.name).catch(() => null);
     if (!u || !prices.PC_IMG.test(u)) throw httpError(404, 'No pack photo.');
     const hit = await fetchImage(new URL(u)).catch(() => null);

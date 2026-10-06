@@ -802,7 +802,8 @@ main > .storage-warn { margin: 0 16px 16px; }
   background: var(--down); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center;
   box-shadow: 0 0 0 2px var(--bg);
 }
-@media (max-width: 1023px) { .tab-wide-only { display: none; } }
+@media (max-width: 1023px) { .tab-wide-only, .tab-secondary { display: none; } }
+@media (min-width: 1024px) { .tab-more, .more-menu { display: none !important; } }
 @media (min-width: 1024px) { .tab-badge { position: static; margin-left: auto; } }
 
 /* ---------- Groups ---------- */
@@ -1131,3 +1132,26 @@ select::-ms-expand { display: none; }
 .rar-list { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
 .rar-list li { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--edge); padding: 3px 0; }
 .rar-list span { color: var(--text-2); }
+
+/* Hits flip on their own, slower and more dramatic than the other cards */
+.rcard.hit .rcard-inner { transition-duration: 1.15s; transition-timing-function: cubic-bezier(.25, 1.25, .45, 1); }
+
+/* ---------- Phone tab bar: Portfolio · Index · Scan · Packs · More ---------- */
+.tab-more { position: relative; }
+.tab-more.active svg { color: var(--cyan); filter: drop-shadow(0 0 6px rgba(34, 211, 238, .7)); }
+.more-menu {
+  position: fixed; z-index: 31; left: 50%; transform: translateX(-50%);
+  bottom: calc(84px + env(safe-area-inset-bottom)); width: min(420px, calc(100% - 24px));
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 10px; border-radius: 22px;
+  background: rgba(12, 14, 26, .92); box-shadow: 0 20px 50px #000c; animation: more-in .18s ease-out;
+}
+.more-menu[hidden] { display: none; }
+@keyframes more-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.more-menu button {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px 10px;
+  border: 0; border-radius: 16px; background: transparent; color: var(--text-2); font-size: 11.5px; font-weight: 600;
+}
+.more-menu button:hover, .more-menu button:focus-visible { background: var(--glass-2); color: var(--text); }
+.more-menu button.active { background: var(--glass-3); color: var(--text); }
+.more-menu button.active svg { color: var(--cyan); }
+.more-menu .tab-badge { top: 6px; right: calc(50% - 22px); }

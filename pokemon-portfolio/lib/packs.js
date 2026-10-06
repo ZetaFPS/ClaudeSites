@@ -215,7 +215,31 @@ function createPacks({ catalog, log = console }) {
   let setsCache = null;
   const preparing = new Map(); // setId -> promise
   const prepError = new Map(); // setId -> message
-  let dexSets = null;
+  let dexSets = null, dexSetsAt = 0;
+  const dexDetail = new Map(); // TCGdex set id -> promise of its full set record
+
+  // TCGdex's record of the same set (matched by name, else id).
+  async function dexSetFor(set) {
+    if (!dexSets || Date.now() - dexSetsAt > 12 * 3600e3) { dexSets = await getJson(`${TCGDEX}/sets`, 20000); dexSetsAt = Date.now(); }
+    const want = norm(set.name);
+    const dex = dexSets.find((s) => norm(s.name) === want) || dexSets.find((s) => norm(s.id) === norm(set.id));
+    if (!dex) return null;
+    if (!dexDetail.has(dex.id)) {
+      const p = getJson(`${TCGDEX}/sets/${encodeURIComponent(dex.id)}`, 20000);
+      p.catch(() => dexDetail.delete(dex.id));
+      dexDetail.set(dex.id, p);
+    }
+    return dexDetail.get(dex.id);
+  }
+  // Official artwork of the set's booster pack(s) (TCGdex lists each pack design), as candidate
+  // image URLs to try — asset URLs come without an extension.
+  async function boosterArt(setId) {
+    const entry = build()?.byId.get(setId);
+    if (!entry) return [];
+    const detail = await dexSetFor(entry.set).catch(() => null);
+    const designs = (detail?.boosters || []).map((b) => b.artwork_front || b.artworkFront).filter((u) => typeof u === 'string' && /^https:\/\//.test(u));
+    return designs.map((u) => (/\.(png|webp|jpe?g)$/i.test(u) ? [u] : [`${u}.webp`, `${u}.png`, `${u}/high.webp`, `${u}/high.png`, u]));
+  }
   const rank = (c) => ({ S: 7, HR: 6, I: 5, X: 4, H: 3, R: 2 }[tierOf(c.rarity)] || 0);
 
   function build() {
@@ -277,11 +301,8 @@ function createPacks({ catalog, log = console }) {
     if (preparing.has(set.id)) return preparing.get(set.id);
     const p = (async () => {
       try {
-        dexSets ||= await getJson(`${TCGDEX}/sets`, 20000);
-        const want = norm(set.name);
-        const dex = dexSets.find((s) => norm(s.name) === want) || dexSets.find((s) => norm(s.id) === norm(set.id));
-        if (!dex) throw new Error('set not found on TCGdex');
-        const detail = await getJson(`${TCGDEX}/sets/${encodeURIComponent(dex.id)}`, 20000);
+        const detail = await dexSetFor(set);
+        if (!detail) throw new Error('set not found on TCGdex');
         const rarityByNum = new Map();
         await mapLimit(detail.cards || [], 6, async (b) => {
           const full = await getJson(`${TCGDEX}/cards/${encodeURIComponent(b.id)}`).catch(() => null);
@@ -364,7 +385,7 @@ function createPacks({ catalog, log = console }) {
 
   return {
     list: () => { const s = build(); return s ? s.list.map(({ format, subset, ...x }) => ({ ...x, era: format.era, size: format.size, note: format.note })) : null; },
-    open, info,
+    open, info, boosterArt,
   };
 }
 

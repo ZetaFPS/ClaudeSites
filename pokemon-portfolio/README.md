@@ -46,8 +46,7 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   until you open it. Sort by newest/oldest set, name, rarity (rarest first), set name, or *my
   collection first*; filter by set, language, a name/number search, or *only cards I own* (owned
   cards are marked ✓). The catalogue is fetched once, saved in the database, and refreshed daily.
-- **Pack simulator** — pick any English booster set (Packs in the sidebar, or *Open packs* on the
-  Index), rip the pack and flip through it card by card: commons first, the rare last and face-down,
+- **Pack simulator** — pick any English booster set (the Packs tab), rip the pack and flip through it card by card: commons first, the rare last and face-down,
   with a burst and holo shine for hits. Packs follow each era's real structure — WotC 11 cards
   (7C/3U/1 rare, holo ~1 in 3), EX 9 cards (5C/2U/reverse/rare), DP–Sword & Shield 10 cards
   (5C/3U/reverse/rare+), Scarlet & Violet 10 cards (4C/3U/2 holo slots incl. Illustration Rare
@@ -63,8 +62,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   **30th Celebration** packs are 5 foil cards with exactly one of the 30 anniversary Pikachu, a
   Rare Holo or Double Rare slot, and at most one hit per pack at the published odds (Double Rare
   1/4, Illustration Rare 1/6, Classic Collection 1/11, SIR 1/20, Futuristic Rare 1/103, RGB 1/4000).
-  The pack shown is a photo of the set's real booster pack (from PriceCharting, background cut
-  away) when one is available. The summary shows what the pack would be worth.
+  The pack shown is the set's real booster pack: the official pack artwork from TCGdex (a random
+  one of the set's pack designs each time), else a photo from PriceCharting (background cut away),
+  else a drawn pack. Hits arrive face-down with a glow and flip on their own, slower than the rest. The summary shows what the pack would be worth.
   Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
