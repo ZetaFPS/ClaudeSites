@@ -1389,12 +1389,44 @@
   // Zig-zag crimp edges and a slightly ragged tear line, as clip-path polygons.
   function zig(yA, yB, n) { return Array.from({ length: n + 1 }, (_, i) => `${(i / n * 100).toFixed(2)}% ${i % 2 ? yB : yA}%`); }
   function tearLine() { return Array.from({ length: 19 }, (_, i) => `${(i / 18 * 100).toFixed(2)}% ${(15.5 + (i % 2 ? 0.7 : -0.5) + Math.random() * 0.5).toFixed(2)}%`); }
-  function showPack(st) {
+  // Choosing a set: a loading pack (shimmer + spinner) is shown until both the pack's artwork
+  // and the set's card rarities are ready; only then the real pack and the Open button appear.
+  async function showPack(st) {
     if (!st) return;
     packs.set = st;
+    packs.busy = true; // not openable while loading
+    clearTimeout(packs.readyTimer);
     $('#packPicker').hidden = true;
     $('#packSummary').hidden = true;
     $('#packStage').hidden = false;
+    $('#packInfo').hidden = true;
+    $('#packOpen').hidden = true;
+    $('#packNote').textContent = st.name;
+    $('#boosterWrap').innerHTML = `<div class="pack-loading" role="status" aria-live="polite">
+        <div class="pack-ghost"><span class="pack-spinner" aria-hidden="true"></span></div>
+        <ul class="load-steps">
+          <li id="lsArt"><i aria-hidden="true"></i>Loading pack art</li>
+          <li id="lsRar"><i aria-hidden="true"></i>Getting card rarities</li>
+        </ul>
+      </div>`;
+    window.scrollTo({ top: 0 });
+    const step = (id, label) => { const li = $(id); if (li && packs.set === st) { li.classList.add('done'); if (label) li.lastChild.textContent = label; } };
+    const [cut, info] = await Promise.all([
+      loadPackArt(st).then((c) => { step('#lsArt', c ? 'Pack art loaded' : 'Pack art ready'); return c; }),
+      waitForRarities(st).then((i) => { step('#lsRar', i?.ready ? 'Card rarities ready' : 'Card rarities checked'); return i; }),
+    ]);
+    if (packs.set !== st || $('#packStage').hidden) return;
+    await sleep(250); // let the ✓ show for a moment
+    if (packs.set !== st) return;
+    if (cut) renderPhotoPack(st, cut);
+    else renderDrawnPack(st);
+    packs.busy = false;
+    $('#packNote').textContent = `${st.name} · ${st.note}`;
+    $('#packOpen').hidden = false;
+    applyPackInfo(st, info || { ready: true });
+  }
+  // The drawn pack (when there's no artwork or photo of the real one).
+  function renderDrawnPack(st) {
     let h = 0;
     for (const ch of st.id) h = (h * 31 + ch.charCodeAt(0)) % 360;
     const tear = tearLine();
@@ -1413,28 +1445,34 @@
         <div class="piece top" style="clip-path:polygon(${topClip})">${skin}</div>
         <div class="tearline"></div>
       </div>`;
-    $('#packNote').textContent = `${st.name} · ${st.note}`;
-    packs.busy = false;
-    checkPackReady(st);
     bindBooster();
-    window.scrollTo({ top: 0 });
-    // Swap in a photo of the real booster pack when there is one.
-    const photo = new Image();
-    photo.onload = () => {
-      if (packs.set !== st || packs.busy) return;
-      const cut = cutoutPack(photo);
-      if (cut) renderPhotoPack(st, cut);
-    };
-    photo.src = `/api/packs/${encodeURIComponent(st.id)}/image`;
   }
-  // Packs are only opened once the set's real rarity data is in (new sets sometimes need it
-  // fetched first), and the info panel shows what the set's packs draw from.
-  async function checkPackReady(st) {
+  // The real pack's artwork/photo, cut out — or null (no image, or it took longer than 8 s).
+  function loadPackArt(st) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const timer = setTimeout(() => resolve(null), 8000);
+      img.onload = () => { clearTimeout(timer); resolve(cutoutPack(img)); };
+      img.onerror = () => { clearTimeout(timer); resolve(null); };
+      img.src = `/api/packs/${encodeURIComponent(st.id)}/image`;
+    });
+  }
+  // Wait until the set's rarity data is ready (new sets may need it fetched first).
+  async function waitForRarities(st) {
+    for (let tries = 0; tries < 60; tries++) {
+      let info;
+      try { info = await api(`/api/packs/${encodeURIComponent(st.id)}/info`); } catch { return { ready: true }; }
+      if (packs.set !== st) return null;
+      if (info.ready || info.error) return info;
+      const li = $('#lsRar');
+      if (li) li.lastChild.textContent = 'Getting card rarities (first time for this set)…';
+      await sleep(2500);
+      if (packs.set !== st || $('#packStage').hidden) return null;
+    }
+    return { error: 'timeout' };
+  }
+  function applyPackInfo(st, info) {
     const btn = $('#packOpen');
-    clearTimeout(packs.readyTimer);
-    let info;
-    try { info = await api(`/api/packs/${encodeURIComponent(st.id)}/info`); } catch { info = { ready: true }; }
-    if (packs.set !== st) return;
     if (info.rarities) {
       const order = Object.entries(info.rarities).sort((a, b) => b[1] - a[1]);
       $('#packInfoBody').innerHTML = `<p>${esc(info.note || '')}</p>
@@ -1445,15 +1483,19 @@
     if (info.ready) {
       btn.disabled = false;
       btn.textContent = 'Open pack';
-    } else if (info.error) {
+    } else {
       btn.disabled = true;
       btn.textContent = 'Not available yet';
       $('#packNote').textContent = 'Rarity data for this set isn’t available yet, so its packs can’t be simulated accurately. Try again later.';
-    } else {
-      btn.disabled = true;
-      btn.textContent = 'Getting this set’s card rarities…';
-      packs.readyTimer = setTimeout(() => { if (packs.set === st && !$('#packStage').hidden) checkPackReady(st); }, 2500);
     }
+  }
+  // Re-check after the server said the set was still being prepared.
+  async function checkPackReady(st) {
+    const btn = $('#packOpen');
+    btn.disabled = true;
+    btn.textContent = 'Getting card rarities…';
+    const info = await waitForRarities(st);
+    if (info && packs.set === st) applyPackInfo(st, info);
   }
   function bindBooster() {
     const booster = $('#booster');

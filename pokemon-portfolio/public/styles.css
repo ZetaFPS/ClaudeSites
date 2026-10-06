@@ -1154,3 +1154,19 @@ select::-ms-expand { display: none; }
 .more-menu button.active { background: var(--glass-3); color: var(--text); }
 .more-menu button.active svg { color: var(--cyan); }
 .more-menu .tab-badge { top: 6px; right: calc(50% - 22px); }
+
+/* ---------- Pack loading ---------- */
+.pack-loading { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 10px 0; }
+.pack-ghost {
+  position: relative; width: min(250px, 64vw); aspect-ratio: 0.57; border-radius: 10px; display: grid; place-items: center; overflow: hidden;
+  background: linear-gradient(110deg, var(--glass) 30%, rgba(255, 255, 255, .09) 45%, var(--glass) 60%) 0 0 / 250% 100%, var(--glass-2);
+  border: 1px solid var(--edge); animation: ghost-shimmer 1.4s linear infinite;
+}
+@keyframes ghost-shimmer { to { background-position: -250% 0, 0 0; } }
+.pack-spinner { width: 46px; height: 46px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, .1); border-top-color: var(--cyan); border-right-color: #a78bfa; animation: spin .8s linear infinite; }
+.load-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--text-2); }
+.load-steps li { display: flex; align-items: center; gap: 10px; }
+.load-steps i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .15); border-top-color: var(--cyan); animation: spin .8s linear infinite; flex: none; }
+.load-steps li.done { color: var(--text); }
+.load-steps li.done i { animation: none; border-color: #34f5a6; background: #34f5a6 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='%2305060b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px no-repeat; }
+@media (prefers-reduced-motion: reduce) { .pack-ghost, .pack-spinner, .load-steps i { animation: none; } }
