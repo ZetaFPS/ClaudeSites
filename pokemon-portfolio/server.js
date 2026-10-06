@@ -263,16 +263,18 @@ async function api(req, res, url) {
     const list = cards.filter((c) => c && typeof c.id === 'string' && c.id.length < 64);
     const out = {};
     let i = 0;
-    await Promise.all(Array.from({ length: 3 }, async () => {
+    // One at a time: PriceCharting refuses bursts, and a refusal would turn a real price into a rough estimate.
+    await Promise.all(Array.from({ length: 1 }, async () => {
       while (i < list.length) {
         const c = list[i++];
         const key = `${c.id}|${c.variant || ''}`;
         try {
           const r = await prices.fullPrices(c.id, typeof c.variant === 'string' ? c.variant.slice(0, 40) : null);
           const psa10 = r.graded?.prices?.['PSA 10'] ?? null;
-          out[key] = { psa10, estimated: !!r.graded?.estimated?.includes('PSA 10'), raw: r.raw?.price ?? null };
+          // retry: PriceCharting couldn't be reached, so this is only a stand-in estimate.
+          out[key] = { psa10, estimated: !!r.graded?.estimated?.includes('PSA 10'), raw: r.raw?.price ?? null, retry: !!r.gradedError };
         } catch (e) {
-          out[key] = { psa10: null, error: e.message };
+          out[key] = { psa10: null, error: e.message, retry: true };
         }
       }
     }));

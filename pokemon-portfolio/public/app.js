@@ -607,10 +607,19 @@
 
   /* ---------- "Highest PSA potential": what a card could gain if it graded PSA 10 ---------- */
   const PSA_TTL = 12 * 3600e3;
+  const PSA_RETRY_TTL = 10 * 60e3; // a stand-in estimate (price source unreachable) is retried soon
   const psaCache = new Map((() => { try { return JSON.parse(lsGet('pokefolio.psa') || '[]'); } catch { return []; } })());
   let psaLoading = false;
   const psaKey = (it) => `${it.cardId}|${it.variant || ''}`;
-  const psaOf = (it) => { const v = psaCache.get(psaKey(it)); return v && Date.now() - v.at < PSA_TTL ? v : null; };
+  const psaOf = (it) => { const v = psaCache.get(psaKey(it)); return v && Date.now() - v.at < (v.retry ? PSA_RETRY_TTL : PSA_TTL) ? v : null; };
+  // The card view's full price lookup is the reference: whenever it loads, it updates the sort's
+  // cached PSA 10 value too, so the two always agree.
+  function rememberPsa(cardId, variant, res) {
+    if (res.gradedError) return;
+    const psa10 = res.graded?.prices?.['PSA 10'] ?? null;
+    psaCache.set(`${cardId}|${variant || ''}`, { psa10, estimated: !!res.graded?.estimated?.includes('PSA 10'), raw: res.raw?.price ?? null, at: Date.now() });
+    lsSet('pokefolio.psa', JSON.stringify([...psaCache].slice(-1500)));
+  }
   function psaPotential(it) {
     const p = psaOf(it);
     if (!p || p.psa10 == null) return null;
@@ -631,7 +640,7 @@
         const r = await api('/api/prices/psa', { method: 'POST', body: { cards: chunk.map((it) => ({ id: it.cardId, variant: it.variant || null })) } }).catch(() => null);
         for (const it of chunk) {
           const v = r?.prices?.[psaKey(it)];
-          psaCache.set(psaKey(it), { psa10: v?.psa10 ?? null, estimated: !!v?.estimated, raw: v?.raw ?? null, at: Date.now() });
+          psaCache.set(psaKey(it), { psa10: v?.psa10 ?? null, estimated: !!v?.estimated, raw: v?.raw ?? null, retry: !v || !!v.retry, at: Date.now() });
         }
         done += chunk.length;
         lsSet('pokefolio.psa', JSON.stringify([...psaCache].slice(-1500)));
@@ -693,7 +702,8 @@
     if (!p) return '<span class="chip psa pending">PSA 10 …</span>';
     if (p.psa10 == null) return '<span class="chip">No PSA 10 data</span>';
     const gain = psaPotential(it);
-    return `<span class="chip psa" title="PSA 10 value${p.estimated ? ' (estimate)' : ''} and how much more than raw">PSA 10 ${p.estimated ? '≈' : ''}${money(p.psa10)} · ${gain >= 0 ? '+' : '−'}${money(Math.abs(gain))}</span>`;
+    const note = p.retry ? 'rough estimate — price source busy, retrying shortly' : p.estimated ? 'estimate — no recent PSA 10 sales' : 'recent PSA 10 sales';
+    return `<span class="chip psa${p.retry ? ' pending' : ''}" title="PSA 10 value (${note}) and how much more than raw">PSA 10 ${p.estimated || p.retry ? '≈' : ''}${money(p.psa10)}${p.estimated || p.retry ? ' est.' : ''} · ${gain >= 0 ? '+' : '−'}${money(Math.abs(gain))}</span>`;
   }
   $('#filterInput').addEventListener('input', renderList);
   $('#sortSelect').addEventListener('change', renderList);
@@ -1384,6 +1394,8 @@
       ctx.graded = res.graded;
       ctx.gradedError = res.gradedError;
       if (ctx.raw) rawCache.set(`${ctx.card.id}|${ctx.variant || ''}`, ctx.raw);
+      rememberPsa(ctx.card.id, ctx.variant, res);
+      if ($('#sortSelect').value === 'psa') renderList();
       // Keep the owned item's raw price fresh too.
       if (ctx.item && ctx.raw && ctx.item.variant === ctx.variant && ctx.item.rawPrice !== ctx.raw.price) {
         ctx.item.rawPrice = ctx.raw.price;

@@ -385,10 +385,10 @@ function pickProduct(cands, info) {
 async function pcViaApi(info) {
   const token = process.env.PRICECHARTING_TOKEN;
   for (const q of pcQueries(info)) {
-    const res = await pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`));
+    const res = await pcRetry(() => pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`)));
     const best = pickProduct((res.products || []).map((p) => ({ console: p['console-name'], product: p['product-name'], ref: p.id })), info);
     if (best) {
-      const p = await pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.ref)}`));
+      const p = await pcRetry(() => pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.ref)}`)));
       const prices = {};
       for (const [field, label] of PC_API_FIELDS) if (p[field] > 0) prices[label] = p[field] / 100;
       return {
@@ -401,10 +401,25 @@ async function pcViaApi(info) {
   return null;
 }
 
+// PriceCharting refuses or times out when it gets several requests in a row: retry those
+// (with a growing pause) instead of failing — a failure falls back to a much rougher estimate.
+async function pcRetry(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const transient = /responded (429|5\d\d)|timed out|unreachable/.test(e.message);
+      if (!transient || attempt >= 3) throw e;
+      await new Promise((r) => setTimeout(r, 1500 * attempt * attempt));
+    }
+  }
+}
 async function pcFetchPage(url) {
-  const res = await pcLimit(() => fetchWithTimeout(url, { headers: { Accept: 'text/html' }, redirect: 'follow' }));
-  if (!res.ok) throw new Error(`PriceCharting responded ${res.status}`);
-  return { url: res.url || url, html: await res.text() };
+  return pcRetry(async () => {
+    const res = await pcLimit(() => fetchWithTimeout(url, { headers: { Accept: 'text/html' }, redirect: 'follow' }));
+    if (!res.ok) throw new Error(`PriceCharting responded ${res.status}`);
+    return { url: res.url || url, html: await res.text() };
+  });
 }
 
 function parseProductPage(html) {
