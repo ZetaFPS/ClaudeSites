@@ -130,6 +130,25 @@ function fileStore(dir) {
       return i ? { id, groupId: i.groupId, mime: i.mime, data: Buffer.from(i.b64, 'base64') } : null;
     },
 
+    // --- visual card index (kept in its own append-only file: it's large and only grows) ---
+    async listCardFps() {
+      const out = new Map();
+      try {
+        for (const line of fs.readFileSync(path.join(dir, 'card-index.jsonl'), 'utf8').split('\n')) {
+          if (!line) continue;
+          try { const r = JSON.parse(line); r.fp = Buffer.from(r.fp, 'base64'); out.set(r.id, r); } catch { /* torn last line */ }
+        }
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+      return [...out.values()];
+    },
+    async putCardFps(rows) {
+      if (!rows.length) return;
+      const lines = rows.map((r) => JSON.stringify({ ...r, fp: Buffer.from(r.fp).toString('base64') })).join('\n');
+      await fs.promises.appendFile(path.join(dir, 'card-index.jsonl'), `${lines}\n`);
+    },
+
     async close() { flushNow(); },
   };
 }
@@ -211,7 +230,13 @@ async function pgStore(url, legacyDir) {
       card       JSONB,
       created_at BIGINT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS group_messages_group_seq ON group_messages (group_id, seq);`);
+    CREATE INDEX IF NOT EXISTS group_messages_group_seq ON group_messages (group_id, seq);
+    CREATE TABLE IF NOT EXISTS card_fps (
+      id         TEXT PRIMARY KEY,
+      meta       JSONB NOT NULL,
+      fp         BYTEA NOT NULL,
+      updated_at BIGINT NOT NULL
+    );`);
 
   const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at };
   const toMessage = (r) => r && {
@@ -331,6 +356,24 @@ async function pgStore(url, legacyDir) {
     async getImage(id) {
       const r = (await q('SELECT id, group_id, mime, data FROM group_images WHERE id = $1', [id])).rows[0];
       return r ? { id: r.id, groupId: r.group_id, mime: r.mime, data: r.data } : null;
+    },
+
+    // --- visual card index ---
+    async listCardFps() {
+      return (await q('SELECT id, meta, fp FROM card_fps')).rows.map((r) => ({ ...r.meta, id: r.id, fp: r.fp }));
+    },
+    async putCardFps(rows) {
+      for (let i = 0; i < rows.length; i += 200) {
+        const chunk = rows.slice(i, i + 200);
+        const params = [], values = [];
+        chunk.forEach((r, k) => {
+          const { id, fp, ...meta } = r;
+          values.push(`($${k * 4 + 1}, $${k * 4 + 2}, $${k * 4 + 3}, $${k * 4 + 4})`);
+          params.push(id, JSON.stringify(meta), Buffer.from(fp), Date.now());
+        });
+        await q(`INSERT INTO card_fps (id, meta, fp, updated_at) VALUES ${values.join(',')}
+                 ON CONFLICT (id) DO UPDATE SET meta = EXCLUDED.meta, fp = EXCLUDED.fp, updated_at = EXCLUDED.updated_at`, params);
+      }
     },
 
     async close() { await pool.end(); },

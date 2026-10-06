@@ -325,15 +325,43 @@
     }
   }
 
+  /* ================= Card images (with fallback sources) ================= */
+  // Every card <img> carries data-cid. If its picture fails to load, it's re-requested from
+  // /api/card-image, which tries every other source for that card (other size, the Pokémon TCG
+  // API, TCGdex in webp/png/jpg); if that fails too, a neat placeholder is shown.
+  const cardImgUrl = (id, size = 'small') => `/api/card-image/${encodeURIComponent(id)}?size=${size}`;
+  const PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 63 88"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b2033"/><stop offset="1" stop-color="#10131f"/></linearGradient></defs><rect x=".5" y=".5" width="62" height="87" rx="3.5" fill="url(#g)" stroke="#2c3550"/><circle cx="31.5" cy="40" r="11" fill="none" stroke="#3b4668" stroke-width="2"/><path d="M20.5 40h22" stroke="#3b4668" stroke-width="2"/><circle cx="31.5" cy="40" r="3.2" fill="#10131f" stroke="#3b4668" stroke-width="2"/><text x="31.5" y="66" font-family="sans-serif" font-size="5" fill="#5d6a90" text-anchor="middle">No image</text></svg>');
+  function imgAttrs(c, size = 'small', { proxy = false } = {}) {
+    const u = size === 'large' ? (c.images?.large || c.images?.small) : c.images?.small;
+    const src = u ? (proxy ? proxied(u) : u) : (c.id ? cardImgUrl(c.id, size) : PLACEHOLDER);
+    return `src="${esc(src)}" data-cid="${esc(c.id || '')}" data-size="${size}"${u ? '' : ' data-fb="1"'}`;
+  }
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !('cid' in img.dataset)) return;
+    if (!img.dataset.fb && img.dataset.cid) {
+      img.dataset.fb = '1';
+      img.src = cardImgUrl(img.dataset.cid, img.dataset.size || 'small');
+    } else if (img.dataset.fb !== '2') {
+      img.dataset.fb = '2';
+      img.classList.add('img-missing');
+      img.src = PLACEHOLDER;
+    }
+  }, true);
+
   /* ================= Card search ================= */
-  async function findCards({ name, number, total, setCode }) {
+  async function findCards({ name, number, total, setCode, lang }) {
     const params = new URLSearchParams();
     if (name) params.set('name', name);
     if (number) params.set('number', number);
     if (total) params.set('total', total);
     if (setCode) params.set('setCode', setCode);
+    if (lang === 'ja') params.set('lang', 'ja');
     return (await api(`/api/search?${params}`)).data || [];
   }
+  const hasJapanese = (t) => /[\u3040-\u30ff\u3400-\u9fff]/.test(t);
+  // Japanese set codes printed bottom-left: "SV2a", "S12a", "SM11b", "SV4K", "SVHK"…
+  const JP_SET = /\b((?:SV|SM|S)\d{1,2}[a-zA-Z+]?|SV-P|S-P|SM-P|SVHK|SVHM|SVLN|SVLS|SVOD|SVOM)\b/;
   function normNumber(n) { return /^\d+$/.test(n) ? String(+n) : n.toUpperCase(); }
   function promoNumber(prefix, digits) {
     const p = prefix.toUpperCase();
@@ -341,7 +369,13 @@
   }
   function parseSearchText(text) {
     let t = ` ${text.trim()} `;
-    let number = null, total = null;
+    let number = null, total = null, lang = null, setCode = null;
+    // "jp", "japanese" or Japanese characters → search Japanese cards.
+    const jpWord = t.match(/\s(jp|jpn|japanese|日本語)\s/i);
+    if (jpWord) { lang = 'ja'; t = t.replace(jpWord[0], ' '); }
+    if (hasJapanese(t)) lang = 'ja';
+    const jpSet = lang === 'ja' && t.match(new RegExp(`\\s${JP_SET.source}\\s`));
+    if (jpSet) { setCode = jpSet[1]; t = t.replace(jpSet[0], ' '); }
     const slash = t.match(/\s#?([a-z]{0,3}\d{1,3}[a-z]?)\s*\/\s*([a-z]{0,3}\d{1,3})\s/i);
     if (slash) { number = normNumber(slash[1]); total = /^\d+$/.test(slash[2]) ? String(+slash[2]) : null; t = t.replace(slash[0], ' '); }
     else {
@@ -350,7 +384,7 @@
       if (promo) { number = promoNumber(promo[1], promo[2]); t = t.replace(promo[0], ' '); }
       else if (plain) { number = normNumber(plain[1]); t = t.replace(plain[0], ' '); }
     }
-    return { name: t.trim(), number, total };
+    return { name: t.trim(), number, total, lang, setCode };
   }
 
   /* ================= Navigation ================= */
@@ -360,6 +394,7 @@
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
     if (view !== 'scan' || focusSearch) stopCamera();
     else if (!stream) startCamera();
+    if (view === 'scan' && !focusSearch) refreshIndexNote();
     if (view === 'portfolio') renderPortfolio();
     if (view === 'leaders') loadLeaderboard();
     if (view === 'grade') prepareGrader();
@@ -528,12 +563,13 @@
       const c = it.card, price = itemPrice(it), gain = itemValue(it) - itemCost(it);
       const gainHtml = it.purchasePrice && price != null ? `<div class="g num ${gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat'}">${signed(gain)}</div>` : '';
       return `<button class="card-row" data-uid="${esc(it.uid)}">
-        <img src="${esc(c.images?.small)}" alt="" loading="lazy">
+        <img ${imgAttrs(c)} alt="" loading="lazy">
         <div class="meta">
           <div class="name">${esc(c.name)}</div>
           <div class="sub">${esc(c.set?.name)} · #${esc(c.number)}${c.set?.printedTotal ? '/' + esc(c.set.printedTotal) : ''}</div>
           <div class="chips">
             ${it.qty > 1 ? `<span class="chip qty">×${it.qty}</span>` : ''}
+            ${c.lang === 'ja' ? '<span class="chip jp">Japanese</span>' : ''}
             ${it.variant ? `<span class="chip">${esc(VARIANT_LABELS[it.variant] || it.variant)}</span>` : ''}
             ${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ''}
           </div>
@@ -578,9 +614,9 @@
         : (scores ? '<span class="match pending">matching…</span>' : '');
       return `<button class="result ${c.id === best ? 'is-best' : ''}" data-i="${i}">
           ${badge}
-          <img src="${esc(proxied(c.images?.small))}" alt="" loading="lazy">
+          <img ${imgAttrs(c, 'small', { proxy: true })} alt="" loading="lazy">
           <div class="name">${esc(c.name)}</div>
-          <div class="sub">${esc(c.set?.name)} · #${esc(c.number)}</div>
+          <div class="sub">${c.lang === 'ja' ? '<span class="chip jp" title="Japanese card">JP</span> ' : ''}${esc(c.set?.name)} · #${esc(c.number)}</div>
           ${hits?.get(c.id)?.length ? `<div class="hits">${hits.get(c.id).map((h) => `<span>✓ ${esc(h)}</span>`).join('')}</div>` : ''}
           <div class="p num" data-price="${i}">${resultPriceHtml(c)}</div>
         </button>`;
@@ -630,8 +666,21 @@
   }
   $('#results').addEventListener('click', (e) => {
     const r = e.target.closest('.result');
-    if (r) openCard({ card: lastResults[+r.dataset.i] });
+    if (r) openResult(+r.dataset.i);
   });
+  // Image-recognition results arrive as lightweight cards; load the full details on open.
+  async function openResult(i) {
+    const c = lastResults[i];
+    if (!c) return;
+    if (!c.lite) return openCard({ card: c });
+    try {
+      const { card } = await api(`/api/card/${encodeURIComponent(c.id)}`);
+      if (lastResults[i]?.id === c.id) lastResults[i] = card;
+      openCard({ card });
+    } catch {
+      toast('Couldn’t load that card — try again');
+    }
+  }
   $('#searchForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const text = $('#searchInput').value.trim();
@@ -809,7 +858,8 @@
     };
     if (t.number) add(0.28, norm(card.number) === norm(t.number) ? 1 : 0, `#${card.number}`);
     if (t.total) add(0.10, +card.set?.printedTotal === +t.total ? 1 : 0, `/${card.set?.printedTotal}`);
-    if (t.setCode) add(0.20, String(card.set?.ptcgoCode || '').toUpperCase() === t.setCode ? 1 : 0, card.set?.ptcgoCode);
+    if (t.setCode && card.lang !== 'ja') add(0.20, String(card.set?.ptcgoCode || '').toUpperCase() === t.setCode ? 1 : 0, card.set?.ptcgoCode);
+    if (t.jpSetCode && card.lang === 'ja') add(0.20, String(card.set?.id || '').toLowerCase() === t.jpSetCode.toLowerCase() ? 1 : 0, card.set?.id);
     if (t.hp && card.hp) add(0.10, String(card.hp) === t.hp ? 1 : 0, `HP ${card.hp}`);
     if (t.ocrSet && card.artist) {
       const f = Math.max(phraseFound(card.artist, t.ocrSet), t.artist ? phraseFound(t.artist, new Set(textWords(card.artist))) : 0);
@@ -823,19 +873,95 @@
     return { score: max ? got / max : null, hits };
   }
 
-  // Final ranking score: artwork similarity leads; printed details refine it (and decide
+  // Final ranking score: image recognition leads; printed details refine it (and decide
   // between reprints that share the same artwork).
   function combinedScore(visual, trait) {
     if (visual == null) return trait ?? 0;
     if (trait == null) return visual;
-    return 0.8 * visual + 0.2 * trait;
+    return 0.85 * visual + 0.15 * trait;
+  }
+
+  /* ---------- scan language + visual index status ---------- */
+  let scanLang = ['en', 'ja'].includes(lsGet('pokefolio.scanLang')) ? lsGet('pokefolio.scanLang') : 'any';
+  function paintLang() {
+    $$('#langSeg button').forEach((b) => {
+      const on = b.dataset.lang === scanLang;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', String(on));
+    });
+  }
+  paintLang();
+  $('#langSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-lang]');
+    if (!b) return;
+    scanLang = b.dataset.lang;
+    lsSet('pokefolio.scanLang', scanLang);
+    paintLang();
+  });
+  let indexInfo = null;
+  async function refreshIndexNote() {
+    const el = $('#indexNote');
+    try { indexInfo = await api('/api/visual-index/status'); } catch { return; }
+    const fmt = (n) => n.toLocaleString();
+    if (!indexInfo.enabled) { el.hidden = true; return; }
+    el.hidden = false;
+    if (!indexInfo.size) {
+      el.textContent = indexInfo.building
+        ? 'Image recognition is warming up (indexing card pictures) — the scanner reads the card’s text until it’s ready.'
+        : 'Image recognition index isn’t ready yet — the scanner reads the card’s text for now.';
+      return;
+    }
+    const parts = [`${fmt(indexInfo.english)} English`, indexInfo.japanese ? `${fmt(indexInfo.japanese)} Japanese` : null].filter(Boolean).join(' + ');
+    el.textContent = `Image recognition across ${parts} cards${indexInfo.building && indexInfo.progress != null && indexInfo.progress < 1 ? ` · adding more (${Math.round(indexInfo.progress * 100)}%)` : ''}`;
+  }
+
+  /* ---------- text reading (helper signals) ---------- */
+  function parseJpSetCode(text) {
+    const m = text.replace(/[|]/g, 'I').match(JP_SET);
+    return m ? m[1] : null;
+  }
+  async function readText(photo, wholeImage, status) {
+    const t = { name: '', number: null, total: null, hp: null, setCode: null, jpSetCode: null, artist: null, ocrSet: null };
+    const worker = await getOcrWorker();
+    const read = async (canvas, psm) => {
+      await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
+      return (await worker.recognize(canvas)).data.text || '';
+    };
+    let bottom = '';
+    if (!wholeImage) {
+      t.name = parseName(await read(band(photo, 0.04, 0.025, 0.74, 0.12), 7));
+      status('› reading HP & set details…');
+      t.hp = parseHP(await read(band(photo, 0.55, 0.02, 0.98, 0.12), 7));
+      bottom = await read(band(photo, 0.02, 0.86, 0.98, 0.985, 2.6), 11);
+      ({ number: t.number, total: t.total } = parseNumber(bottom));
+    }
+    status('› reading attacks & illustrator…');
+    const full = await read(band(photo, 0, 0, 1, 1, 1.4), 3);
+    const all = `${bottom}\n${full}`;
+    if (!t.name) t.name = parseName(full);
+    if (!t.number) ({ number: t.number, total: t.total } = parseNumber(full));
+    t.hp = t.hp || parseHP(full);
+    t.setCode = parseSetCode(all);
+    t.jpSetCode = parseJpSetCode(bottom) || parseJpSetCode(full);
+    t.artist = parseArtist(all);
+    t.ocrSet = new Set(textWords(all));
+    return t;
+  }
+
+  // Compare the photo with the picture of every card in the server's index.
+  async function visualSearch(photo, { isCard, lang }) {
+    if (!window.CardVision?.descriptors || indexInfo?.enabled === false) return null;
+    const q = window.CardVision.descriptors(photo, { isCard });
+    if (!q.length) return null;
+    return api('/api/visual-search', { method: 'POST', body: { q, lang, limit: 24 } });
   }
 
   async function scanCanvas(card, { wholeImage = false } = {}) {
-    const status = $('#scanStatus');
+    const statusEl = $('#scanStatus');
+    const status = (msg) => { statusEl.textContent = msg; };
     const scanner = $('.scanner');
-    status.hidden = false;
-    status.textContent = '› reading card…';
+    statusEl.hidden = false;
+    status('› looking at your card…');
     scanner.classList.add('busy');
     $('#shutterBtn').disabled = true;
     // Keep a private copy: the capture canvas is reused by the next scan. For an uncropped
@@ -853,79 +979,80 @@
         wholeImage = false;
       }
     }
+    const lang = scanLang;
     try {
-      const t = { name: '', number: null, total: null, hp: null, setCode: null, artist: null, ocrSet: null };
+      // 1. Image recognition against every card, while 2. the text is read as a helper.
+      const visualP = visualSearch(photo, { isCard: !wholeImage, lang }).catch(() => null);
+      let t = null;
       try {
-        const worker = await getOcrWorker();
-        const read = async (canvas, psm) => {
-          await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
-          return (await worker.recognize(canvas)).data.text || '';
-        };
-        let bottom = '';
-        if (!wholeImage) {
-          t.name = parseName(await read(band(photo, 0.04, 0.025, 0.74, 0.12), 7));
-          status.textContent = '› reading HP & set details…';
-          t.hp = parseHP(await read(band(photo, 0.55, 0.02, 0.98, 0.12), 7));
-          bottom = await read(band(photo, 0.02, 0.86, 0.98, 0.985, 2.6), 11);
-          ({ number: t.number, total: t.total } = parseNumber(bottom));
+        t = await readText(photo, wholeImage, status);
+      } catch { /* text reader unavailable: image recognition alone */ }
+      status('› matching your photo against the card index…');
+      const vis = await visualP;
+      if (vis?.index) indexInfo = vis.index;
+      const visHits = vis?.results || [];
+      const serverScore = new Map(visHits.map((h) => [h.card.id, h.score]));
+      const jaLikely = lang === 'ja' || (lang === 'any' && (visHits.slice(0, 3).filter((h) => h.card.lang === 'ja').length >= 2 || (!visHits.length && !!t?.jpSetCode && !t?.setCode)));
+
+      // Candidates from the printed text (name, number, set code).
+      const textReq = [];
+      if (t && (t.name || t.number)) {
+        if (lang !== 'ja' && !jaLikely) textReq.push(gatherCandidates(t));
+        if (lang !== 'en' && t.number && (jaLikely || t.jpSetCode)) {
+          textReq.push(findCards({ number: t.number, total: t.total, setCode: t.jpSetCode, lang: 'ja' }));
         }
-        status.textContent = '› reading attacks & illustrator…';
-        const full = await read(band(photo, 0, 0, 1, 1, 1.4), 3);
-        const all = `${bottom}\n${full}`;
-        if (!t.name) t.name = parseName(full);
-        if (!t.number) ({ number: t.number, total: t.total } = parseNumber(full));
-        t.hp = t.hp || parseHP(full);
-        t.setCode = parseSetCode(all);
-        t.artist = parseArtist(all);
-        t.ocrSet = new Set(textWords(all));
-      } catch (e) {
-        status.textContent = 'Text reader failed to load — search by name below.';
-        return;
       }
-      if (!t.name && !t.number) {
-        status.textContent = 'Couldn’t read that card. Fill the frame, avoid glare, hold steady — or search below.';
-        return;
+      const textCards = (await Promise.allSettled(textReq)).flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+      const pool = new Map();
+      for (const h of visHits.slice(0, 16)) pool.set(h.card.id, h.card);
+      for (const c of textCards) {
+        // Prefer the full card from the text search over a lightweight index entry.
+        if (!pool.has(c.id) || pool.get(c.id).lite) pool.set(c.id, c);
+        if (pool.size >= 56) break;
       }
-      const label = [t.name, t.number && (t.total ? `${t.number}/${t.total}` : `#${t.number}`)].filter(Boolean).join(' ');
-      const readout = [label, t.setCode, t.hp && `HP ${t.hp}`, t.artist && `Illus. ${t.artist}`].filter(Boolean).join(' · ');
-      status.textContent = `› read: ${readout} · finding candidates…`;
-      showSearching(label);
-      let cards;
-      try { cards = await gatherCandidates(t); } catch (e) { showSearchError(e); status.textContent = ''; return; }
+      const cards = [...pool.values()];
+      const label = t ? [t.name && !jaLikely ? t.name : '', t.number && (t.total ? `${t.number}/${t.total}` : `#${t.number}`)].filter(Boolean).join(' ') : '';
+      const readout = t ? [label, t.setCode || t.jpSetCode, t.hp && `HP ${t.hp}`, t.artist && `Illus. ${t.artist}`].filter(Boolean).join(' · ') : '';
       if (!cards.length) {
-        renderResults([], `No cards found for ${label}. Try again, or search by name below.`);
-        status.textContent = `› read: ${readout}`;
+        if (textReq.length && !textCards.length && !vis) {
+          showSearchError({});
+        } else {
+          renderResults([], `No match found${label ? ` for ${label}` : ''}. Fill the frame, avoid glare and hold steady — or search by name below.`);
+        }
+        status(readout ? `› read: ${readout}` : (vis ? '› no match' : 'Couldn’t read that card — try again or search below.'));
         return;
       }
 
-      // Image recognition: compare the photo with every candidate's artwork.
+      // Close-up comparison of the shortlist (full resolution, many alignments).
       const scores = new Map();
-      renderResults(cards, `Comparing your photo with ${cards.length} card${cards.length === 1 ? '' : 's'}…`, { scores });
-      let visual = new Map();
+      renderResults(cards, `Comparing your photo with ${cards.length} likely card${cards.length === 1 ? '' : 's'}…`, { scores });
+      let local = new Map();
       if (window.CardVision) {
-        visual = await window.CardVision.rank(photo, cards.map((c) => ({ key: c.id, url: proxied(c.images?.small) })), {
+        local = await window.CardVision.rank(photo, cards.map((c) => ({ key: c.id, url: proxied(c.images?.small) || cardImgUrl(c.id), fallback: cardImgUrl(c.id) })), {
           isCard: !wholeImage,
-          onProgress: (d, n) => { status.textContent = `› matching artwork ${d}/${n}`; },
+          onProgress: (d, n) => status(`› matching artwork ${d}/${n}`),
         }).catch(() => new Map());
       }
       const ranked = cards.map((c) => {
-        const v = visual.get(c.id) ?? null;
-        const tm = traitMatch(c, t);
+        const a = serverScore.get(c.id), b = local.get(c.id);
+        const v = a != null && b != null ? 0.5 * a + 0.5 * b : (a ?? b ?? null);
+        const tm = t ? traitMatch(c, t) : { score: null, hits: [] };
         return { c, v, hits: tm.hits, s: combinedScore(v, tm.score) };
-      }).sort((a, b) => b.s - a.s);
+      }).sort((x, y) => y.s - x.s);
       for (const r of ranked) scores.set(r.c.id, r.s);
       const top = ranked[0], second = ranked[1];
       const sameArt = second && top.v != null && second.v != null && Math.abs(top.v - second.v) < 0.03 && top.s - second.s < 0.05;
+      const how = visHits.length ? 'image recognition' : (local.size ? 'artwork match' : 'printed details');
       renderResults(ranked.map((r) => r.c),
         sameArt
-          ? `Several cards share this artwork (reprints) — check the set number at the bottom of your card and pick the one that matches`
-          : `${cards.length} candidate${cards.length === 1 ? '' : 's'}, ranked by artwork match${visual.size ? '' : ' (unavailable)'} and printed details`,
+          ? 'Several cards share this artwork (reprints) — check the set number at the bottom of your card and pick the one that matches'
+          : `${cards.length} candidate${cards.length === 1 ? '' : 's'}, ranked by ${how}${t ? ' and printed details' : ''}`,
         { scores, best: top.c.id, hits: new Map(ranked.map((r) => [r.c.id, r.hits])) });
-      status.textContent = `› best match: ${top.c.name} · ${top.c.set?.name} #${top.c.number}`;
+      status(`› best match: ${top.c.name} · ${top.c.set?.name} #${top.c.number}${readout ? ` · read: ${readout}` : ''}`);
 
       // Confident? Jump straight to the card.
-      const confident = cards.length === 1 || (top.s >= 0.62 && (!second || top.s - second.s >= 0.05));
-      if (confident) openCard({ card: top.c });
+      const confident = (cards.length === 1 && (top.v == null || top.v >= 0.6)) || (top.s >= 0.62 && (!second || top.s - second.s >= 0.04));
+      if (confident) openResult(0);
       else $('#resultsHead').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } finally {
       scanner.classList.remove('busy');
@@ -1081,11 +1208,12 @@
 
     $('#sheetBody').innerHTML = `
       <div class="detail-top">
-        <div class="holo" id="holo"><div class="holo-inner"><img src="${esc(c.images?.large || c.images?.small)}" alt="${esc(c.name)} card"><div class="holo-shine"></div></div></div>
+        <div class="holo" id="holo"><div class="holo-inner"><img ${imgAttrs(c, 'large')} alt="${esc(c.name)} card"><div class="holo-shine"></div></div></div>
         <h2 class="detail-name" id="sheetTitle">${esc(c.name)}</h2>
         <div class="detail-set">
           ${set.images?.symbol ? `<img src="${esc(set.images.symbol)}" alt="">` : ''}
           <span>${esc(set.name)} · #${esc(c.number)}${set.printedTotal ? '/' + esc(set.printedTotal) : ''}</span>
+          ${c.lang === 'ja' ? '<span class="chip jp">Japanese</span>' : ''}
         </div>
         ${owned && !isOwned ? `<div class="chip qty" style="margin-top:8px">In your vault ×${owned}</div>` : ''}
         <div class="price-hero">
@@ -1312,7 +1440,7 @@
         <span class="lb-rank num">${e.rank}</span>
         <span class="pod-avatar sm">${nameInitial(e.name)}</span>
         <span class="lb-name">${esc(e.name)}${user && e.id === user.id ? ' <em>you</em>' : ''}<small>${e.cards} card${e.cards === 1 ? '' : 's'}</small></span>
-        <span class="lb-thumbs">${e.top.slice(0, 3).map((t) => (t.image ? `<img src="${esc(t.image)}" alt="" loading="lazy">` : '')).join('')}</span>
+        <span class="lb-thumbs">${e.top.slice(0, 3).map((t) => `<img ${imgAttrs({ id: t.id, images: { small: t.image } })} alt="" loading="lazy">`).join('')}</span>
         <span class="lb-value num">${money(e.value)}</span>
       </button>`).join('');
   }
@@ -1335,7 +1463,7 @@
           ${e.top.map((t, i) => `
             <button class="pcard" data-card="${esc(t.id)}">
               <span class="pcard-rank">${i + 1}</span>
-              ${t.image ? `<img src="${esc(t.image)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+              <img ${imgAttrs({ id: t.id, images: { small: t.image } })} alt="" loading="lazy">
               <span class="name">${esc(t.name)}</span>
               <span class="sub">${esc(t.set)}${t.number ? ` · #${esc(t.number)}` : ''}</span>
               <span class="p num">${money(t.price)}${t.qty > 1 ? ` <small>×${t.qty}</small>` : ''}</span>
@@ -1629,7 +1757,7 @@
       if (m.kind === 'card' && m.card) {
         const c = m.card;
         content += `<button class="msg-card" data-card="${esc(c.id)}">
-          ${c.image ? `<img src="${esc(c.image)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+          <img ${imgAttrs({ id: c.id, images: { small: c.image } })} alt="" loading="lazy">
           <span><b>${esc(c.name)}</b><small>${esc(c.set)}${c.number ? ` · #${esc(c.number)}` : ''}</small><em class="num">${c.price != null ? money(c.price) : 'No price yet'}</em></span>
         </button>`;
       }
@@ -1718,7 +1846,7 @@
         <p class="muted">${items.length ? 'Pick a card from your collection to share with the group.' : 'Your collection is empty — scan or search for cards to share them here.'}</p>
         <div class="picker-grid">
           ${items.map((it) => `<button class="pcard" data-share="${esc(it.uid)}">
-              ${it.card.images?.small ? `<img src="${esc(it.card.images.small)}" alt="" loading="lazy">` : '<span class="pcard-noimg"></span>'}
+              <img ${imgAttrs(it.card)} alt="" loading="lazy">
               <span class="name">${esc(it.card.name)}</span>
               <span class="sub">${esc(it.card.set?.name)} · #${esc(it.card.number)}</span>
               <span class="p num">${money(itemPrice(it))}</span>

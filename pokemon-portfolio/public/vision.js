@@ -164,9 +164,9 @@
     return { x: best.x0 / s, y: best.y0 / s, w: bw / s, h: bh / s };
   }
 
-  // Fingerprints of a scanned photo at a few alignments. `isCard` = the image is already
-  // cropped to the card (camera frame); otherwise search for a card-shaped region.
-  function queryFingerprints(src, { isCard = true } = {}) {
+  // Card-shaped regions of a scanned photo to compare, at a few alignments. `isCard` = the image
+  // is already cropped to the card (camera frame); otherwise search for a card-shaped region.
+  function queryRects(src, { isCard = true } = {}) {
     const W = src.width, H = src.height;
     const rects = [];
     const add = (cx, cy, h) => {
@@ -199,7 +199,21 @@
       }
       rects.push({ x: 0, y: 0, w: W, h: H });
     }
-    return rects.map((r) => fingerprint(src, r));
+    return rects;
+  }
+  function queryFingerprints(src, opts) {
+    return queryRects(src, opts).map((r) => fingerprint(src, r));
+  }
+
+  // Compact descriptors (public/descriptor.js) of the photo, in the same format as the server's
+  // index of every card, base64-encoded for /api/visual-search.
+  function descriptors(source, { isCard = true, max = 32 } = {}) {
+    const D = window.CardDescriptor;
+    if (!D) return [];
+    return queryRects(source, { isCard }).slice(0, max).map((rect) => {
+      const { src, r } = shrink(source, rect, 360);
+      return D.toBase64(D.compute(sample(src, r, D.W, D.H), 4));
+    });
   }
 
   function bestSimilarity(queries, fp) {
@@ -218,16 +232,17 @@
       img.src = url;
     });
   }
-  function candidateFingerprint(key, url) {
+  function candidateFingerprint(key, url, fallback) {
     if (!fpCache.has(key)) {
-      const p = loadImage(url).then((img) => fingerprint(img, { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight }));
+      const p = loadImage(url).catch((e) => (fallback ? loadImage(fallback) : Promise.reject(e)))
+        .then((img) => fingerprint(img, { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight }));
       p.catch(() => fpCache.delete(key));
       fpCache.set(key, p);
     }
     return fpCache.get(key);
   }
 
-  // Score candidates [{ key, url }] against a photo. Returns Map key -> similarity (0…1).
+  // Score candidates [{ key, url, fallback? }] against a photo. Returns Map key -> similarity (0…1).
   async function rank(photo, candidates, { isCard = true, concurrency = 6, onProgress } = {}) {
     const queries = queryFingerprints(photo, { isCard });
     const scores = new Map();
@@ -235,12 +250,12 @@
     await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, async () => {
       while (i < candidates.length) {
         const c = candidates[i++];
-        try { scores.set(c.key, bestSimilarity(queries, await candidateFingerprint(c.key, c.url))); } catch { /* image unavailable */ }
+        try { scores.set(c.key, bestSimilarity(queries, await candidateFingerprint(c.key, c.url, c.fallback))); } catch { /* image unavailable */ }
         onProgress?.(++done, candidates.length);
       }
     }));
     return scores;
   }
 
-  window.CardVision = { rank, fingerprint, similarity, queryFingerprints, detectCard };
+  window.CardVision = { rank, fingerprint, similarity, queryFingerprints, descriptors, detectCard };
 })();

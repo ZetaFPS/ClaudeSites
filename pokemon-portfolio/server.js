@@ -1,6 +1,6 @@
 'use strict';
 // PokéFolio server — static frontend + accounts + portfolio sync + price aggregation.
-// Zero dependencies: needs only Node.js 18+.
+// Dependencies: pg (PostgreSQL) and sharp (card fingerprints for the scanner's visual index).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -9,6 +9,8 @@ const { createAuth, httpError } = require('./lib/auth');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi } = require('./lib/groups');
+const { createVisualIndex, liteCard } = require('./lib/visualIndex');
+const CardDescriptor = require('./public/descriptor');
 
 const PORT = +process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -16,7 +18,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi; // set up in start()
+let store, auth, leaderboard, groupsApi, visualIndex; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -194,7 +196,8 @@ async function api(req, res, url) {
       name: (p.get('name') || '').slice(0, 80),
       number: (p.get('number') || '').slice(0, 12) || null,
       total: (p.get('total') || '').slice(0, 4) || null,
-      setCode: (p.get('setCode') || '').slice(0, 5) || null,
+      setCode: (p.get('setCode') || '').slice(0, 6) || null,
+      lang: p.get('lang') === 'ja' ? 'ja' : null,
     };
     if (!parsed.name && !parsed.number) throw httpError(400, 'Enter a card name or number.');
     return send(res, 200, await prices.search(parsed));
@@ -227,6 +230,40 @@ async function api(req, res, url) {
     return send(res, 200, await prices.fullPrices(m[1], url.searchParams.get('variant')));
   }
 
+  // --- image recognition: compare a scanned photo with every card's picture ---
+  if (pathname === '/api/visual-index/status' && method === 'GET') {
+    return send(res, 200, visualIndex.status());
+  }
+  if (pathname === '/api/visual-search' && method === 'POST') {
+    limitApi(req);
+    const body = await readBody(req);
+    if (!Array.isArray(body.q) || !body.q.length || body.q.length > 32) throw httpError(400, 'Send 1–32 descriptors.');
+    const queries = body.q.map((b64) => (typeof b64 === 'string' && b64.length < 1000 ? CardDescriptor.fromBase64(b64) : null));
+    if (queries.some((d) => !d || d.length !== CardDescriptor.LEN)) throw httpError(400, 'Bad descriptor.');
+    const lang = ['en', 'ja'].includes(body.lang) ? body.lang : 'any';
+    const hits = visualIndex.search(queries, { lang, limit: Math.min(40, Math.max(1, +body.limit || 24)) });
+    // Full card details for the best few (prices, attacks, set code…), lightweight for the rest.
+    const full = new Map();
+    const top = hits.slice(0, 12).map((h) => h.meta.id);
+    await Promise.race([
+      (async () => {
+        await prices.primeCards(top).catch(() => {});
+        await Promise.all(top.map(async (id) => { const c = await prices.getCard(id).catch(() => null); if (c) full.set(id, c); }));
+      })(),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]);
+    return send(res, 200, {
+      index: visualIndex.status(),
+      results: hits.map((h) => ({ score: Math.round(h.score * 10000) / 10000, card: full.get(h.meta.id) || liteCard(h.meta) })),
+    });
+  }
+
+  // --- a card's picture, from whichever source has it ---
+  const im = decodeURIComponent(pathname).match(/^\/api\/card-image\/([A-Za-z0-9._:-]{1,80})$/);
+  if (im && method === 'GET') {
+    return cardImage(res, im[1], url.searchParams.get('size') === 'large' ? 'large' : 'small');
+  }
+
   // --- groups: chat, photos, card shares, group leaderboard ---
   if (await groupsApi(req, res, url)) return;
 
@@ -244,6 +281,32 @@ async function proxyImage(res, raw) {
   let target;
   try { target = new URL(raw); } catch { throw httpError(400, 'Bad image URL.'); }
   if (target.protocol !== 'https:' || !IMG_HOSTS.has(target.hostname)) throw httpError(400, 'Image host not allowed.');
+  sendImage(res, await fetchImage(target));
+}
+// Card picture with fallbacks: tries every known source for the card until one loads.
+const imgWinner = new Map(); // `${id}|${size}` -> url that worked
+async function cardImage(res, id, size) {
+  const key = `${id}|${size}`;
+  const known = imgWinner.get(key);
+  if (known) {
+    const hit = await fetchImage(new URL(known)).catch(() => null);
+    if (hit) return sendImage(res, hit, 86400);
+    imgWinner.delete(key);
+  }
+  for (const u of await prices.imageCandidates(id, size)) {
+    let target;
+    try { target = new URL(u); } catch { continue; }
+    if (!IMG_HOSTS.has(target.hostname)) continue;
+    const hit = await fetchImage(target).catch(() => null);
+    if (hit) {
+      imgWinner.set(key, target.href);
+      if (imgWinner.size > 5000) imgWinner.delete(imgWinner.keys().next().value);
+      return sendImage(res, hit, 86400);
+    }
+  }
+  throw httpError(404, 'No picture found for this card.');
+}
+async function fetchImage(target) {
   let hit = imgCache.get(target.href);
   if (!hit) {
     const ctrl = new AbortController();
@@ -262,10 +325,13 @@ async function proxyImage(res, raw) {
     imgCache.set(target.href, hit);
     if (imgCache.size > 400) imgCache.delete(imgCache.keys().next().value);
   }
+  return hit;
+}
+function sendImage(res, hit, maxAge = 604800) {
   res.writeHead(200, {
     'Content-Type': hit.type,
     'Content-Length': hit.body.length,
-    'Cache-Control': 'public, max-age=604800, immutable',
+    'Cache-Control': `public, max-age=${maxAge}${maxAge >= 604800 ? ', immutable' : ''}`,
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(hit.body);
@@ -315,6 +381,11 @@ async function start() {
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
+  visualIndex = createVisualIndex({
+    store,
+    langs: (process.env.VISUAL_INDEX_LANGS || 'en,ja').split(',').map((l) => l.trim()).filter((l) => l === 'en' || l === 'ja'),
+  });
+  await visualIndex.start();
   server.listen(PORT, () => {
     console.log(`PokéFolio running at http://localhost:${PORT}`);
     console.log(`  accounts stored in: ${store.kind}`);

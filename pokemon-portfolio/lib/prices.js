@@ -12,7 +12,15 @@
 // same printing (1st Edition / Reverse Holo). A wrong price is worse than no price.
 
 const POKEMONTCG = 'https://api.pokemontcg.io/v2';
-const TCGDEX = 'https://api.tcgdex.net/v2/en';
+const TCGDEX_API = 'https://api.tcgdex.net/v2';
+const TCGDEX = `${TCGDEX_API}/en`;
+// Card ids: plain = Pokémon TCG API, `tcgdex:` = TCGdex English, `tcgdexja:` = TCGdex Japanese.
+const DEX_PREFIX = { en: 'tcgdex:', ja: 'tcgdexja:' };
+function parseId(id) {
+  if (id.startsWith('tcgdexja:')) return { source: 'tcgdex', lang: 'ja', ref: id.slice(9) };
+  if (id.startsWith('tcgdex:')) return { source: 'tcgdex', lang: 'en', ref: id.slice(7) };
+  return { source: 'ptcg', lang: 'en', ref: id };
+}
 const PC = 'https://www.pricecharting.com';
 const UA = 'Mozilla/5.0 (compatible; PokeFolio/2.1)';
 
@@ -132,7 +140,7 @@ function ptcgSearch(q) {
 // Fetch many cards in a few requests and seed the per-card cache.
 async function primeCards(ids) {
   if (!ptcgUp()) return;
-  const missing = ids.filter((id) => !id.startsWith('tcgdex:') && !(cache.get(`card:${id}`)?.expires > Date.now()));
+  const missing = ids.filter((id) => !id.startsWith('tcgdex') && !(cache.get(`card:${id}`)?.expires > Date.now()));
   for (let i = 0; i < missing.length; i += 50) {
     const chunk = missing.slice(i, i + 50);
     const q = '(' + chunk.map((id) => `id:"${id.replace(/"/g, '')}"`).join(' OR ') + ')';
@@ -143,11 +151,11 @@ async function primeCards(ids) {
 
 /* ---------------- TCGdex ---------------- */
 const camel = (k) => k.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
-function tcgdexFull(id) {
-  return cached(`dex-full:${id}`, 12 * HOUR, () => getJson(`${TCGDEX}/cards/${encodeURIComponent(id)}`));
+function tcgdexFull(id, lang = 'en') {
+  return cached(`dex-full:${lang}:${id}`, 12 * HOUR, () => getJson(`${TCGDEX_API}/${lang}/cards/${encodeURIComponent(id)}`));
 }
 // Convert a TCGdex card into the same shape the Pokémon TCG API uses.
-function fromTcgdex(c) {
+function fromTcgdex(c, lang = 'en') {
   const tp = c.pricing?.tcgplayer || {};
   const prices = {};
   for (const [k, v] of Object.entries(tp)) {
@@ -156,7 +164,8 @@ function fromTcgdex(c) {
   }
   const cm = c.pricing?.cardmarket;
   return {
-    id: `tcgdex:${c.id}`,
+    id: `${DEX_PREFIX[lang] || DEX_PREFIX.en}${c.id}`,
+    lang: lang === 'en' ? undefined : lang,
     name: c.name,
     supertype: c.category === 'Pokemon' ? 'Pokémon' : c.category,
     subtypes: [c.stage, c.suffix, c.trainerType, c.energyType].filter(Boolean),
@@ -176,7 +185,7 @@ function fromTcgdex(c) {
     regulationMark: c.regulationMark,
     rules: c.effect ? [c.effect] : undefined,
     set: {
-      id: c.set?.id, name: c.set?.name,
+      id: c.set?.id, name: c.set?.name, releaseDate: c.set?.releaseDate,
       printedTotal: c.set?.cardCount?.official, total: c.set?.cardCount?.total,
       images: { symbol: c.set?.symbol ? `${c.set.symbol}.png` : undefined, logo: c.set?.logo ? `${c.set.logo}.png` : undefined },
     },
@@ -186,18 +195,38 @@ function fromTcgdex(c) {
   };
 }
 
-async function tcgdexSearch({ name, number, total }) {
+// Cards of one TCGdex set (Japanese set codes like "SV2a" are TCGdex set ids).
+async function tcgdexSetCards(setId, lang) {
+  return cached(`dex-set:${lang}:${setId}`, 12 * HOUR, async () => {
+    for (const id of [...new Set([setId, setId.toUpperCase(), setId.replace(/^([a-z]+)/i, (m) => m.toUpperCase()), setId.toLowerCase()])]) {
+      try {
+        const set = await getJson(`${TCGDEX_API}/${lang}/sets/${encodeURIComponent(id)}`);
+        if (set?.cards) return set.cards;
+      } catch (e) {
+        if (!/responded 404/.test(e.message)) throw e;
+      }
+    }
+    return [];
+  });
+}
+
+async function tcgdexSearch({ name, number, total, setCode, lang }) {
   if (!name && !number) return [];
-  const key = `dex-search:${slug(name)}:${normNum(number)}:${total || ''}`;
+  lang = lang === 'ja' ? 'ja' : 'en';
+  const key = `dex-search:${lang}:${slug(name) || name || ''}:${normNum(number)}:${total || ''}:${setCode || ''}`;
   return cached(key, 30 * 60e3, async () => {
+    const base = `${TCGDEX_API}/${lang}`;
     let list = [];
-    if (name) list = await getJson(`${TCGDEX}/cards?name=${encodeURIComponent(name)}`);
-    else list = await getJson(`${TCGDEX}/cards?localId=${encodeURIComponent('eq:' + number)}`);
-    list = Array.isArray(list) ? list : [];
-    if (number) list = list.filter((c) => numEq(c.localId, number));
+    if (setCode && number && lang !== 'en') list = (await tcgdexSetCards(setCode, lang).catch(() => [])).filter((c) => numEq(c.localId, number));
+    if (!list.length) {
+      if (name) list = await getJson(`${base}/cards?name=${encodeURIComponent(name)}`);
+      else list = await getJson(`${base}/cards?localId=${encodeURIComponent('eq:' + number)}`);
+      list = Array.isArray(list) ? list : [];
+      if (number) list = list.filter((c) => numEq(c.localId, number));
+    }
     // Newest first is a decent default when there's no number to narrow it down.
-    const full = (await mapLimit(list.slice(-40).reverse(), 8, (b) => tcgdexFull(b.id).catch(() => null))).filter(Boolean);
-    let cards = full.map(fromTcgdex);
+    const full = (await mapLimit(list.slice(-40).reverse(), 8, (b) => tcgdexFull(b.id, lang).catch(() => null))).filter(Boolean);
+    let cards = full.map((c) => fromTcgdex(c, lang));
     if (total) {
       const exact = cards.filter((c) => +c.set.printedTotal === +total);
       if (exact.length) cards = exact;
@@ -216,7 +245,8 @@ async function tcgdexMatch(info) {
 /* ---------------- Cards ---------------- */
 function getCard(id) {
   return cached(`card:${id}`, 6 * HOUR, async () => {
-    if (id.startsWith('tcgdex:')) return fromTcgdex(await tcgdexFull(id.slice(7)));
+    const { source, lang, ref } = parseId(id);
+    if (source === 'tcgdex') return fromTcgdex(await tcgdexFull(ref, lang), lang);
     return (await ptcgJson(`${POKEMONTCG}/cards/${encodeURIComponent(id)}`)).data;
   });
 }
@@ -247,6 +277,12 @@ function buildQueries({ name, number, total, setCode }) {
 // While the Pokémon TCG API is marked down, TCGdex goes first and the API is only tried if
 // TCGdex has no match.
 async function search(parsed) {
+  // Japanese cards only exist on TCGdex.
+  if (parsed.lang === 'ja') {
+    let data = await tcgdexSearch({ ...parsed, lang: 'ja' });
+    if (!data.length && parsed.name && parsed.number) data = await tcgdexSearch({ name: parsed.name, lang: 'ja' });
+    return { data, source: 'tcgdex' };
+  }
   const viaPtcg = async () => {
     for (const q of buildQueries(parsed)) {
       const data = await ptcgSearch(q);
@@ -305,9 +341,11 @@ const PRINTING_WORDS = new Set(['1st', 'edition', 'shadowless', 'unlimited', 're
 
 // Score a PriceCharting product (console slug + product slug) against our card.
 // Returns -1 unless name, number, set and printing all match.
-function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant }, { relaxed = false } = {}) {
+function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant, japanese = false }, { relaxed = false } = {}) {
   consoleSlug = slug(consoleSlug); productSlug = slug(productSlug);
-  if (!consoleSlug.startsWith('pokemon') || /japanese|chinese|korean|german|french|italian|spanish/.test(consoleSlug)) return -1;
+  if (!consoleSlug.startsWith('pokemon') || /chinese|korean|german|french|italian|spanish/.test(consoleSlug)) return -1;
+  // Japanese and English printings are different cards with very different prices.
+  if (/japanese/.test(consoleSlug) !== !!japanese) return -1;
   const segs = productSlug.split('-');
   if (!number || normNum(segs.at(-1)) !== normNum(number)) return -1;
   const base = segs.slice(0, -1).join('-');
@@ -346,7 +384,7 @@ function pickProduct(cands, info) {
 
 async function pcViaApi(info) {
   const token = process.env.PRICECHARTING_TOKEN;
-  for (const q of [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]) {
+  for (const q of pcQueries(info)) {
     const res = await pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`));
     const best = pickProduct((res.products || []).map((p) => ({ console: p['console-name'], product: p['product-name'], ref: p.id })), info);
     if (best) {
@@ -390,7 +428,7 @@ function parseProductPage(html) {
 }
 
 async function pcViaPage(info) {
-  for (const q of [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]) {
+  for (const q of pcQueries(info)) {
     const { url, html } = await pcFetchPage(`${PC}/search-products?type=prices&q=${encodeURIComponent(q)}`);
     const direct = new URL(url).pathname.match(/\/game\/([^/]+)\/([^/?#]+)/);
     if (direct) {
@@ -414,9 +452,14 @@ async function pcViaPage(info) {
   return null;
 }
 
+// Japanese set names are in Japanese, so they can't help the search there.
+const pcQueries = (info) => (info.japanese
+  ? [`${info.name} ${info.number} japanese`, `${info.name} japanese ${normNum(info.number)}`]
+  : [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]);
+
 function priceCharting(info) {
   if (!info.name || !info.number) return Promise.resolve(null);
-  const key = `pc:${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
+  const key = `pc:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
   return cached(key, 12 * HOUR, () => (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info)));
 }
 
@@ -483,12 +526,43 @@ function fillGradedEstimates(prices, rawPrice, vintage) {
   return { prices: out, estimated: missing, basis: implied.length ? 'graded' : 'raw' };
 }
 
+/* ---------------- Japanese cards ---------------- */
+// PriceCharting lists Japanese cards under their English names ("Pikachu ex #132"), so a Japanese
+// card's English name is rebuilt from its Pokédex number plus any Latin suffix (ex, V, VMAX…).
+const LATIN_SUFFIX = /\s*(VMAX|VSTAR|V-UNION|V|GX|EX|ex|BREAK|LV\.X)\s*$/;
+function dexEnglishName(n) {
+  return cached(`dexname:${n}`, 7 * 24 * HOUR, async () => {
+    const cards = await ptcgSearch(`nationalPokedexNumbers:${n} supertype:pokemon`);
+    const counts = new Map();
+    for (const c of cards) {
+      const base = String(c.name || '').replace(LATIN_SUFFIX, '').trim();
+      if (base && !/['’]s\s/.test(base)) counts.set(base, (counts.get(base) || 0) + 1);
+    }
+    return [...counts].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] || null;
+  });
+}
+async function englishName(card) {
+  if (/^[\x20-\x7e]+$/.test(card.name || '')) return card.name;
+  const dex = card.nationalPokedexNumbers?.[0];
+  if (!dex) return null;
+  const base = await dexEnglishName(dex).catch(() => null);
+  if (!base) return null;
+  const suffix = String(card.name).match(LATIN_SUFFIX)?.[1];
+  return suffix ? `${base} ${suffix}` : base;
+}
+
 /* ---------------- Public API ---------------- */
 function cardInfo(card, variant) {
   return {
     id: card.id, name: card.name, setName: card.set?.name || '', number: card.number,
     total: card.set?.printedTotal, variant: variant || defaultVariant(card),
   };
+}
+// Lookup details for the price sources (Japanese cards are looked up by English name).
+async function priceInfo(card, variant) {
+  const info = cardInfo(card, variant);
+  if (card.lang !== 'ja') return info;
+  return { ...info, name: await englishName(card), japanese: true };
 }
 
 // Raw (ungraded, near-mint) price in USD for one printing, from the first source that has one:
@@ -500,10 +574,10 @@ function cardInfo(card, variant) {
 // Sources 4–5 are marked `approx` so the app can say so.
 async function rawPrice(id, variant) {
   const card = await getCard(id);
-  const info = cardInfo(card, variant);
+  const info = await priceInfo(card, variant);
   const tp = tcgplayerPrice(card, info.variant);
   if (tp) return { price: tp.price, source: 'TCGplayer', variant: tp.variant, updatedAt: card.tcgplayer?.updatedAt || null };
-  const dex = id.startsWith('tcgdex:') ? null : await tcgdexMatch(info).catch(() => null);
+  const dex = id.startsWith('tcgdex') ? null : await tcgdexMatch(info).catch(() => null);
   const dp = dex && tcgplayerPrice(dex, info.variant);
   if (dp) return { price: dp.price, source: 'TCGplayer', variant: dp.variant, updatedAt: dex.tcgplayer?.updatedAt || null };
   const pc = await priceCharting(info).catch(() => null);
@@ -525,7 +599,7 @@ async function rawPrice(id, variant) {
 // Everything for the card detail view: raw price + graded ladder, with a sanity check.
 async function fullPrices(id, variant) {
   const card = await getCard(id);
-  const info = cardInfo(card, variant);
+  const info = await priceInfo(card, variant);
   const [raw, pc] = await Promise.all([
     rawPrice(id, info.variant),
     priceCharting(info).catch((e) => ({ error: e.message })),
@@ -536,7 +610,7 @@ async function fullPrices(id, variant) {
     const ungraded = pc.prices.Ungraded;
     if (raw.price != null && ungraded != null && raw.source !== 'PriceCharting') {
       const ratio = ungraded / raw.price;
-      if (ratio > 3 || ratio < 1 / 3) warnings.push(`PriceCharting's ungraded price ($${ungraded.toFixed(2)}) is far from TCGplayer's ($${raw.price.toFixed(2)}) — the graded match may be a different printing.`);
+      if (ratio > 3 || ratio < 1 / 3) warnings.push(`PriceCharting's ungraded price ($${ungraded.toFixed(2)}) is far from ${raw.source}'s ($${raw.price.toFixed(2)}) — the graded match may be a different printing.`);
     }
     if (pc.prices['PSA 10'] != null && ungraded != null && pc.prices['PSA 10'] < ungraded) {
       warnings.push('PSA 10 is listed below the ungraded price, which usually means very few graded sales.');
@@ -551,11 +625,54 @@ async function fullPrices(id, variant) {
       ? { ...graded, prices: est.prices, estimated: est.estimated, estimateBasis: est.basis }
       : {
         source: 'Estimate', estimated: est.estimated, estimateBasis: est.basis, prices: est.prices, warnings: [],
-        url: `${PC}/search-products?type=prices&q=${encodeURIComponent(`${info.name} ${info.setName} ${info.number}`)}`,
+        url: `${PC}/search-products?type=prices&q=${encodeURIComponent(pcQueries({ ...info, name: info.name || card.name })[0])}`,
         title: null,
       };
   }
   return { raw, graded, gradedError: pc?.error || null };
 }
 
-module.exports = { search, getCard, primeCards, rawPrice, fullPrices, _test: { scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, cache } };
+/* ---------------- Card images: fallback sources ---------------- */
+// Every place a card's picture might live, best first: the card's own image, the other size,
+// the Pokémon TCG API's predictable URLs, and TCGdex's copy (webp, png or jpg).
+async function imageCandidates(id, size = 'small') {
+  const other = size === 'large' ? 'small' : 'large';
+  const urls = [];
+  const add = (u) => { if (typeof u === 'string' && /^https:\/\//.test(u) && !urls.includes(u)) urls.push(u); };
+  const addDex = (u) => {
+    const m = typeof u === 'string' && u.match(/^(https:\/\/assets\.tcgdex\.net\/.*)\/(low|high)\.(webp|png|jpg)$/);
+    if (!m) return add(u);
+    for (const q of size === 'large' ? ['high', 'low'] : ['low', 'high']) for (const ext of ['webp', 'png', 'jpg']) add(`${m[1]}/${q}.${ext}`);
+  };
+  const card = await getCard(id).catch(() => null);
+  add(card?.images?.[size]);
+  add(card?.images?.[other]);
+  const { source, lang, ref } = parseId(id);
+  if (source === 'ptcg') {
+    const cut = ref.lastIndexOf('-');
+    const setId = card?.set?.id || ref.slice(0, cut), num = card?.number || ref.slice(cut + 1);
+    if (/^[a-z0-9.]+$/i.test(setId) && /^[a-z0-9]+$/i.test(num)) {
+      for (const hi of size === 'large' ? ['_hires', ''] : ['', '_hires']) add(`https://images.pokemontcg.io/${setId}/${num}${hi}.png`);
+    }
+    if (card) {
+      const dex = await tcgdexMatch(cardInfo(card)).catch(() => null);
+      addDex(dex?.images?.[size]);
+    }
+  } else {
+    addDex(card?.images?.[size]);
+    // An English TCGdex card may have a Pokémon TCG API twin with a working picture.
+    if (lang === 'en' && card && ptcgUp()) {
+      const twins = await ptcgSearch(buildQueries({ name: card.name, number: card.number })[0] || '').catch(() => []);
+      const twin = twins.find((c) => numEq(c.number, card.number) && slug(c.name) === slug(card.name)
+        && setMatches(card.set?.name, c.set?.name, card.set?.printedTotal, c.set?.printedTotal));
+      add(twin?.images?.[size]);
+      add(twin?.images?.[other]);
+    }
+  }
+  return urls;
+}
+
+module.exports = {
+  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, parseId,
+  _test: { scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
+};

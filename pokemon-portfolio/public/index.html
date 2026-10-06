@@ -147,7 +147,16 @@
           <button class="shutter" id="shutterBtn" aria-label="Scan card" disabled><span></span></button>
           <button class="btn ghost" id="stopCamBtn" disabled>Stop</button>
         </div>
+        <div class="scan-lang">
+          <span class="eyebrow">Card language</span>
+          <div class="seg" id="langSeg" role="radiogroup" aria-label="Card language">
+            <button type="button" data-lang="any" class="active" role="radio" aria-checked="true">Auto</button>
+            <button type="button" data-lang="en" role="radio" aria-checked="false">English</button>
+            <button type="button" data-lang="ja" role="radio" aria-checked="false">Japanese <span lang="ja">日本語</span></button>
+          </div>
+        </div>
         <div class="scan-status" id="scanStatus" hidden></div>
+        <p class="index-note" id="indexNote" hidden></p>
         </div>
         <div class="find-col">
 
@@ -161,7 +170,7 @@
         <div class="find-hint glass">
           <div class="reticle small" aria-hidden="true"></div>
           <h3>Scan or search to find a card</h3>
-          <p>Snap a card with the camera or upload a photo. PokéFolio reads the name and number, then compares the artwork against every candidate and puts the closest visual match first.</p>
+          <p>Snap a card with the camera or upload a photo — English or Japanese. PokéFolio compares your photo with the pictures of every card it knows, while it reads the name, number and set code to confirm the match.</p>
         </div>
         </div>
         </div>
@@ -304,6 +313,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+  <script src="descriptor.js" defer></script>
   <script src="vision.js" defer></script>
   <script src="grader.js" defer></script>
   <script src="app.js" defer></script>

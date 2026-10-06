@@ -5,15 +5,24 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - **Accounts** — sign up / sign in with email + password; your collection syncs to the server and
   follows you across devices. "Continue without an account" keeps cards in the browser, and they're
   imported automatically when you later create an account.
-- **Scan a card** with your camera (or a photo). On-device OCR (Tesseract.js) reads the name and
-  collector number (e.g. `4/102`) to gather candidates — including same-name cards in case the number
-  was misread — then **image recognition** compares your photo with each candidate's artwork and puts
-  the closest visual match first (with a match %). Confident matches open automatically. Uncropped
-  photos work too: the card is located in the picture first. (`public/vision.js`, no model download.)
-  The scanner also reads the card's **set code** (e.g. `PAL EN`), **HP**, **illustrator** and
-  **attack/ability names**, and checks each candidate against them — shown as ✓ chips on the
-  results. Artwork similarity leads the ranking; printed details refine it and tell apart reprints
-  that share the same artwork.
+- **Scan a card** with your camera (or a photo) — **English or Japanese**. Image recognition leads:
+  the server keeps a **visual index** with a compact picture fingerprint of every card (English cards
+  from the Pokémon TCG API, Japanese cards from TCGdex), and your photo is compared with all of them,
+  so a card is found even when none of its text can be read (glare, blur, Japanese text). The best
+  matches are then compared close-up at full resolution with your photo. Confident matches open
+  automatically. Uncropped photos work too: the card is located in the picture first.
+  (`lib/visualIndex.js`, `public/descriptor.js`, `public/vision.js` — no model download.)
+  At the same time, on-device OCR (Tesseract.js) reads the **name**, **collector number** (`4/102`,
+  `025/165`), **set code** (`PAL EN`, or Japanese codes like `SV2a`), **HP**, **illustrator** and
+  **attack names**. These add candidates and refine the ranking (shown as ✓ chips) — mainly to
+  tell apart reprints that share the same artwork. Pick **Auto / English / Japanese** under the
+  scanner to narrow the search.
+- **Japanese cards** — scan them, or search with Japanese text (`ピカチュウ`), `jp` (`Pikachu jp`), or a
+  number with a set code (`025/165 SV2a jp`). Japanese cards are marked **JP**. Their prices come from
+  PriceCharting's Japanese listings (looked up by the Pokémon's English name), when it has them.
+- **Card pictures never go missing**: if an image fails to load, the app asks the server, which tries
+  every other source for that card — the other size, the Pokémon TCG API's image server, TCGdex (webp,
+  png or jpg) — and shows a neat placeholder only if none has it.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
@@ -63,7 +72,7 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 
 ## Keeping accounts when you update the site
 
-Accounts and collections are stored in **PostgreSQL** whenever `DATABASE_URL` is set. The database
+Accounts, collections and the scanner's visual index are stored in **PostgreSQL** whenever `DATABASE_URL` is set. The database
 lives outside the web server, so redeploys, restarts and host changes never touch it. Without
 `DATABASE_URL` the app falls back to a file on the server's disk — fine on your own computer, but
 most hosts (e.g. Render's free tier) wipe that disk on every deploy.
@@ -88,11 +97,11 @@ version when it first connects, those accounts and portfolios are imported into 
 
 ## Run it
 
-Needs **Node.js 18+**.
+Needs **Node.js 20+**.
 
 ```sh
 cd pokemon-portfolio
-npm install          # only dependency: pg (PostgreSQL driver)
+npm install          # dependencies: pg (PostgreSQL driver), sharp (image decoding for the visual index)
 npm start            # or: node server.js
 # open http://localhost:3000
 ```
@@ -110,6 +119,17 @@ HTTPS for phones.
 | `PRICECHARTING_TOKEN` | Recommended. Your [PriceCharting API](https://www.pricecharting.com/api-documentation) token (paid subscription). When set, graded prices come from the official API. Without it, the server reads PriceCharting's public product pages, which is slower and can break if their page layout changes. |
 | `POKEMONTCG_API_KEY` | Optional free key from [pokemontcg.io](https://dev.pokemontcg.io) for higher rate limits. |
 | `TRUST_PROXY` | Set to `1` when running behind a reverse proxy so rate limiting uses `X-Forwarded-For`. |
+| `VISUAL_INDEX` | Set to `off` to disable the scanner's visual index (the scanner then relies on reading the card's text). |
+| `VISUAL_INDEX_LANGS` | Which catalogues to index: `en,ja` (default), `en` or `ja`. |
+
+### The visual index
+
+On first start the server downloads each card's small picture once (newest sets first, a few at a
+time) and stores a 336-byte fingerprint per card — about 35 MB for the ~35,000 English and Japanese
+cards. The first full build takes roughly an hour; scanning already uses whatever is indexed so far
+and falls back to reading the card's text until then (the scan page shows progress). Fingerprints
+are saved in the database (or `DATA_DIR/card-index.jsonl` without one), so restarts and redeploys
+only fetch cards from newly released sets, checked once a day.
 
 ### Deploying
 
@@ -120,13 +140,16 @@ hosted as static files only (e.g. GitHub Pages), because sign-in and PriceCharti
 ## How it's built
 
 ```
-server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/cards, /api/prices/*
+server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/search, /api/prices/*,
+                 /api/visual-search, /api/card-image/* (picture with fallbacks)
 lib/auth.js      scrypt password hashing, 30-day HttpOnly session cookies
 lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
 lib/leaderboard.js  server-side collection values and rankings (global + per group)
 lib/groups.js    groups API: invites, chat, photos, card shares, permissions
-public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, grader.js = pre-grading
+lib/visualIndex.js  picture fingerprints of every card (English + Japanese) and the photo search
+public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, descriptor.js = shared
+                 card fingerprint (browser + server), grader.js = pre-grading
 ```
 
 Prices are cached on the server (card data 6 h, prices 12 h) and the app refreshes your
