@@ -85,7 +85,11 @@ const pcLimit = limiter(2, 350);
 
 const slug = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/&/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-const words = (s) => slug(s).split('-').filter((w) => w && !['pokemon', 'set', 'and', 'the', 'tcg'].includes(w));
+// Set-name words for fuzzy set matching. Plurals are folded ("Promos" → "promo") and filler dropped,
+// because sites name the same set differently ("SWSH Black Star Promos" vs "Pokemon Promo").
+const words = (s) => slug(s).split('-')
+  .map((w) => (w.length > 4 && w.endsWith('s') ? w.slice(0, -1) : w))
+  .filter((w) => w && !['pokemon', 'set', 'and', 'the', 'tcg', 'black', 'star'].includes(w));
 const normKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const normNum = (n) => slug(n).replace(/^0+(?=\d)/, '').replace(/([a-z])0+(?=\d)/, '$1');
 const numEq = (a, b) => !!normNum(a) && normNum(a) === normNum(b);
@@ -178,7 +182,7 @@ function fromTcgdex(c) {
     },
     images: c.image ? { small: `${c.image}/low.webp`, large: `${c.image}/high.webp` } : {},
     tcgplayer: Object.keys(prices).length ? { updatedAt: tp.updated || null, prices } : undefined,
-    cardmarket: cm ? { updatedAt: cm.updated || null, prices: { trendPrice: cm.trend, averageSellPrice: cm.avg, avg30: cm.avg30, lowPrice: cm.low } } : undefined,
+    cardmarket: cm ? { updatedAt: cm.updated || null, prices: { trendPrice: cm.trend, averageSellPrice: cm.avg, avg30: cm.avg30, lowPrice: cm.low, reverseHoloTrend: cm['trend-holo'], reverseHoloAvg30: cm['avg30-holo'] } } : undefined,
   };
 }
 
@@ -301,7 +305,7 @@ const PRINTING_WORDS = new Set(['1st', 'edition', 'shadowless', 'unlimited', 're
 
 // Score a PriceCharting product (console slug + product slug) against our card.
 // Returns -1 unless name, number, set and printing all match.
-function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant }) {
+function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant }, { relaxed = false } = {}) {
   consoleSlug = slug(consoleSlug); productSlug = slug(productSlug);
   if (!consoleSlug.startsWith('pokemon') || /japanese|chinese|korean|german|french|italian|spanish/.test(consoleSlug)) return -1;
   const segs = productSlug.split('-');
@@ -318,22 +322,35 @@ function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant
   const ours = words(setName);
   const theirs = words(consoleSlug);
   const hit = ours.filter((w) => theirs.includes(w)).length;
-  if (!ours.length || hit / ours.length < 0.5) return -1;
+  if (!relaxed && (!ours.length || hit / ours.length < 0.5)) return -1;
   // Prefer exact set names and plain products over tagged ones ("[Shadowless]", "[Cosmos Holo]").
   return 10 + hit * 2 - (theirs.length - hit) - tags.split('-').filter(Boolean).length * 2;
+}
+
+// Pick the PriceCharting product for our card from candidates [{ console, product, ref }].
+// Strict: name, number, printing AND set must match. If nothing passes, accept a match that ignores
+// the set name only when exactly one product in the results has that exact name, number and
+// printing — set names differ a lot between sites (promos, special sets), but a unique
+// name+number is still unambiguous.
+function pickProduct(cands, info) {
+  let best = null, bestScore = -1;
+  for (const c of cands) {
+    const sc = scoreProduct(c.console, c.product, info);
+    if (sc > bestScore) { best = c; bestScore = sc; }
+  }
+  if (best) return best;
+  const loose = new Map();
+  for (const c of cands) if (scoreProduct(c.console, c.product, info, { relaxed: true }) >= 0) loose.set(`${slug(c.console)}/${slug(c.product)}`, c);
+  return loose.size === 1 ? { ...[...loose.values()][0], relaxed: true } : null;
 }
 
 async function pcViaApi(info) {
   const token = process.env.PRICECHARTING_TOKEN;
   for (const q of [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]) {
     const res = await pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`));
-    let best = null, bestScore = -1;
-    for (const p of res.products || []) {
-      const sc = scoreProduct(p['console-name'], p['product-name'], info);
-      if (sc > bestScore) { best = p; bestScore = sc; }
-    }
+    const best = pickProduct((res.products || []).map((p) => ({ console: p['console-name'], product: p['product-name'], ref: p.id })), info);
     if (best) {
-      const p = await pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.id)}`));
+      const p = await pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.ref)}`));
       const prices = {};
       for (const [field, label] of PC_API_FIELDS) if (p[field] > 0) prices[label] = p[field] / 100;
       return {
@@ -377,18 +394,17 @@ async function pcViaPage(info) {
     const { url, html } = await pcFetchPage(`${PC}/search-products?type=prices&q=${encodeURIComponent(q)}`);
     const direct = new URL(url).pathname.match(/\/game\/([^/]+)\/([^/?#]+)/);
     if (direct) {
-      // Search jumped straight to a product page — use it only if it's the right card.
-      if (scoreProduct(decodeURIComponent(direct[1]), decodeURIComponent(direct[2]), info) >= 0) {
+      // Search jumped straight to a product page (PriceCharting does this when there's only one
+      // result) — use it only if it's the right card.
+      if (pickProduct([{ console: decodeURIComponent(direct[1]), product: decodeURIComponent(direct[2]) }], info)) {
         const parsed = parseProductPage(html);
         if (Object.keys(parsed.prices).length) return { ...parsed, url };
       }
       continue;
     }
-    let productUrl = null, bestScore = -1;
-    for (const m of html.matchAll(/href=["'](?:https?:\/\/www\.pricecharting\.com)?\/game\/([a-z0-9\-&%]+)\/([a-z0-9\-%]+)["']/gi)) {
-      const sc = scoreProduct(decodeURIComponent(m[1]), decodeURIComponent(m[2]), info);
-      if (sc > bestScore) { bestScore = sc; productUrl = `${PC}/game/${m[1]}/${m[2]}`; }
-    }
+    const cands = [...html.matchAll(/href=["'](?:https?:\/\/www\.pricecharting\.com)?\/game\/([a-z0-9\-&%]+)\/([a-z0-9\-%]+)["']/gi)]
+      .map((m) => ({ console: decodeURIComponent(m[1]), product: decodeURIComponent(m[2]), ref: `${PC}/game/${m[1]}/${m[2]}` }));
+    const productUrl = pickProduct(cands, info)?.ref;
     if (productUrl) {
       const page = await pcFetchPage(productUrl);
       const parsed = parseProductPage(page.html);
@@ -404,6 +420,69 @@ function priceCharting(info) {
   return cached(key, 12 * HOUR, () => (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info)));
 }
 
+/* ---------------- Cardmarket (EUR) + exchange rate ---------------- */
+// EUR → USD from the European Central Bank reference rate (via Frankfurter, free, no key).
+function eurToUsd() {
+  return cached('fx:eurusd', 12 * HOUR, async () => {
+    for (const url of ['https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD', 'https://api.frankfurter.app/latest?from=EUR&to=USD']) {
+      try {
+        const r = (await getJson(url, {}, 8000)).rates?.USD;
+        if (r > 0.5 && r < 2) return { rate: r, live: true };
+      } catch { /* try the next one */ }
+    }
+    return { rate: 1.08, live: false }; // recent typical rate if the rate service is unreachable
+  });
+}
+// Cardmarket price for this printing in EUR. Cardmarket doesn't separate 1st Edition copies,
+// so those are skipped rather than priced as unlimited.
+function cardmarketEur(card, variant) {
+  if (is1st(variant)) return null;
+  const p = card?.cardmarket?.prices;
+  if (!p) return null;
+  const v = isReverse(variant) ? (p.reverseHoloTrend ?? p.reverseHoloAvg30 ?? null) : (p.trendPrice ?? p.avg30 ?? p.averageSellPrice ?? null);
+  return v > 0 ? +v : null;
+}
+// Lowest current TCGplayer listing for exactly this printing (asking price, not a sale).
+function tcgplayerListing(card, variant) {
+  const v = variant || defaultVariant(card) || Object.keys(card?.tcgplayer?.prices || {})[0];
+  const p = v && card?.tcgplayer?.prices?.[v];
+  const price = p ? (p.low ?? p.mid ?? null) : null;
+  return price > 0 ? { price: +price, variant: v } : null;
+}
+
+/* ---------------- Graded estimates ---------------- */
+// Typical PSA premiums over a near-mint raw copy, by raw value (cheap cards carry a much bigger
+// premium because a graded slab has a floor value of its own). Vintage (WotC era) PSA 10s are
+// scarcer still. Used ONLY when there are no recent graded sales, and always labelled as estimates.
+const GRADE_KEYS = ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7'];
+const GRADE_FLOORS = { 'PSA 10': 22, 'Grade 9': 14, 'Grade 8': 10, 'Grade 7': 8 };
+function premiums(raw, vintage) {
+  const m = raw < 5 ? [6, 2.6, 1.7, 1.25] : raw < 25 ? [4.5, 2, 1.45, 1.15] : raw < 100 ? [3.5, 1.7, 1.3, 1.08] : raw < 500 ? [2.8, 1.5, 1.2, 1] : [2.4, 1.35, 1.12, 0.95];
+  if (vintage) { m[0] *= 2.2; m[1] *= 1.4; m[2] *= 1.15; }
+  return Object.fromEntries(GRADE_KEYS.map((k, i) => [k, m[i]]));
+}
+// Fill missing PSA 10/9/8/7 values. When some grades have real sales, the missing ones are scaled
+// from those (so the estimate agrees with the real data); otherwise from the raw price.
+function fillGradedEstimates(prices, rawPrice, vintage) {
+  const out = { ...prices };
+  const missing = GRADE_KEYS.filter((k) => !(out[k] > 0));
+  if (!missing.length) return { prices: out, estimated: [] };
+  const base0 = out.Ungraded > 0 ? out.Ungraded : rawPrice;
+  if (!(base0 > 0)) return { prices: out, estimated: [] };
+  const m = premiums(base0, vintage);
+  // Implied raw value from each real graded sale (above the slab floor, where premiums apply).
+  const implied = GRADE_KEYS.filter((k) => out[k] > GRADE_FLOORS[k] * 1.5).map((k) => out[k] / m[k]);
+  const base = implied.length ? implied.sort((a, b) => a - b)[implied.length >> 1] : base0;
+  const mm = premiums(base, vintage);
+  for (const k of missing) out[k] = Math.round(Math.max(base * mm[k], GRADE_FLOORS[k]) * 100) / 100;
+  // Keep the ladder in order (a lower grade never above a higher one).
+  for (let i = 1; i < GRADE_KEYS.length; i++) {
+    const hi = out[GRADE_KEYS[i - 1]], k = GRADE_KEYS[i];
+    if (missing.includes(k) && out[k] > hi) out[k] = Math.round(hi * 0.9 * 100) / 100;
+  }
+  return { prices: out, estimated: missing, basis: implied.length ? 'graded' : 'raw' };
+}
+
 /* ---------------- Public API ---------------- */
 function cardInfo(card, variant) {
   return {
@@ -412,20 +491,34 @@ function cardInfo(card, variant) {
   };
 }
 
-// Raw (ungraded, near-mint) market price in USD for one printing:
-// TCGplayer market (Pokémon TCG API) → TCGplayer market (TCGdex) → PriceCharting "Ungraded".
+// Raw (ungraded, near-mint) price in USD for one printing, from the first source that has one:
+//   1. TCGplayer market price (Pokémon TCG API)       — recent sales
+//   2. TCGplayer market price (TCGdex)                 — recent sales
+//   3. PriceCharting "Ungraded"                        — recent eBay sales
+//   4. Cardmarket trend price, € converted to $        — recent European sales
+//   5. TCGplayer lowest current listing                — asking price (last resort)
+// Sources 4–5 are marked `approx` so the app can say so.
 async function rawPrice(id, variant) {
   const card = await getCard(id);
   const info = cardInfo(card, variant);
   const tp = tcgplayerPrice(card, info.variant);
   if (tp) return { price: tp.price, source: 'TCGplayer', variant: tp.variant, updatedAt: card.tcgplayer?.updatedAt || null };
-  if (!id.startsWith('tcgdex:')) {
-    const dex = await tcgdexMatch(info).catch(() => null);
-    const dp = dex && tcgplayerPrice(dex, info.variant);
-    if (dp) return { price: dp.price, source: 'TCGplayer', variant: dp.variant, updatedAt: dex.tcgplayer?.updatedAt || null };
-  }
+  const dex = id.startsWith('tcgdex:') ? null : await tcgdexMatch(info).catch(() => null);
+  const dp = dex && tcgplayerPrice(dex, info.variant);
+  if (dp) return { price: dp.price, source: 'TCGplayer', variant: dp.variant, updatedAt: dex.tcgplayer?.updatedAt || null };
   const pc = await priceCharting(info).catch(() => null);
   if (pc?.prices?.Ungraded != null) return { price: pc.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: null };
+  const eur = cardmarketEur(card, info.variant) ?? cardmarketEur(dex, info.variant);
+  if (eur != null) {
+    const fx = await eurToUsd();
+    return {
+      price: Math.round(eur * fx.rate * 100) / 100, source: 'Cardmarket', approx: true, variant: info.variant,
+      note: `€${eur.toFixed(2)} on Cardmarket (EU), converted at ${fx.rate.toFixed(3)}${fx.live ? '' : ' (approx. rate)'}`,
+      updatedAt: card.cardmarket?.updatedAt || dex?.cardmarket?.updatedAt || null,
+    };
+  }
+  const ls = tcgplayerListing(card, info.variant) || (dex && tcgplayerListing(dex, info.variant));
+  if (ls) return { price: ls.price, source: 'TCGplayer listing', approx: true, variant: ls.variant, note: 'Lowest current listing on TCGplayer — no recent sales recorded' };
   return { price: null, source: null, variant: info.variant };
 }
 
@@ -450,7 +543,19 @@ async function fullPrices(id, variant) {
     }
     graded = { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices, warnings };
   }
+  // Fill grades with no recent sales (or no PriceCharting match at all) with clearly-labelled estimates.
+  const vintage = /^(199\d|200[0-2])/.test(String(card.set?.releaseDate || ''));
+  const est = fillGradedEstimates(graded?.prices || {}, raw.price, vintage);
+  if (est.estimated.length) {
+    graded = graded
+      ? { ...graded, prices: est.prices, estimated: est.estimated, estimateBasis: est.basis }
+      : {
+        source: 'Estimate', estimated: est.estimated, estimateBasis: est.basis, prices: est.prices, warnings: [],
+        url: `${PC}/search-products?type=prices&q=${encodeURIComponent(`${info.name} ${info.setName} ${info.number}`)}`,
+        title: null,
+      };
+  }
   return { raw, graded, gradedError: pc?.error || null };
 }
 
-module.exports = { search, getCard, primeCards, rawPrice, fullPrices, _test: { scoreProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, cache } };
+module.exports = { search, getCard, primeCards, rawPrice, fullPrices, _test: { scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, cache } };

@@ -915,3 +915,11 @@ main > .storage-warn { margin: 0 16px 16px; }
 }
 
 @media (min-width: 1024px) { .g-back { display: none; } }
+
+/* Approximate / estimated prices */
+.approx { opacity: .7; margin-right: 2px; font-weight: 500; }
+.rung.est .bar i { background: repeating-linear-gradient(90deg, rgba(167, 139, 250, .75) 0 6px, rgba(167, 139, 250, .25) 6px 10px); box-shadow: none; }
+.rung.est .val b { color: var(--text-2); }
+.est-tag { font-style: normal; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--violet); border: 1px solid rgba(167, 139, 250, .45); border-radius: 5px; padding: 0 4px; vertical-align: 1px; }
+.est-note { font-size: 12px; line-height: 1.5; color: var(--text-2); margin: 12px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(167, 139, 250, .08); border: 1px solid rgba(167, 139, 250, .25); }
+.est-note b { color: var(--violet); }

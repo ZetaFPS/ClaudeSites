@@ -19,10 +19,16 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
   2. TCGplayer market price via [TCGdex](https://tcgdex.dev) for the same card (same set, number and printing)
   3. PriceCharting "Ungraded" price (strict match: name, number, set and printing must all agree)
+  4. Cardmarket (EU) trend price converted from € to $ at the ECB daily rate — marked "≈"
+  5. TCGplayer's lowest current listing, as a last resort — marked "≈"
 
   Unlimited printings are the default over 1st Edition. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
+  If a match can't be made on set name (common for promos), a product that is the *only* one with
+  that exact name, number and printing is accepted. Grades with no recent sales (PSA 10/9/8/7) are
+  **estimated** — scaled from the card's real graded sales when it has some, otherwise from its raw
+  price using typical PSA premiums — and always shown as "≈ … est." with a striped bar.
 - **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
   to see their 5 most valuable cards. Values are recalculated on the server from current market
   prices (saved prices can't be faked), and only display names, totals and top cards are public —

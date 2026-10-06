@@ -9,7 +9,7 @@
   const GUEST_KEY = 'pokefolio.v1';
   const GUEST_FLAG = 'pokefolio.guest';
   const STALE_MS = 6 * 60 * 60 * 1000;
-  const PRICE_VERSION = 2; // bump when price matching changes so saved prices get recomputed
+  const PRICE_VERSION = 3; // bump when price matching changes so saved prices get recomputed
 
   const VARIANT_LABELS = {
     normal: 'Normal', holofoil: 'Holofoil', reverseHolofoil: 'Reverse Holo',
@@ -279,6 +279,7 @@
     if (t != null) return { price: t, source: 'TCGplayer' };
     return rawCache.get(`${card.id}|${variant || ''}`) || null;
   }
+  const APPROX_SOURCES = new Set(['Cardmarket', 'TCGplayer listing']);
   function itemPrice(item) {
     if (item.rawPrice != null) return item.rawPrice;
     return knownRaw(item.card, item.variant)?.price ?? null;
@@ -538,7 +539,7 @@
           </div>
         </div>
         <div class="price">
-          <div class="v num">${price == null ? '<span class="muted">No price</span>' : money(price * it.qty)}</div>
+          <div class="v num">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
           ${it.qty > 1 && price != null ? `<div class="muted num">${money(price)} ea</div>` : ''}
           ${gainHtml}
         </div>
@@ -561,7 +562,7 @@
   const proxied = (u) => (u ? `/api/img?u=${encodeURIComponent(u)}` : '');
   function resultPriceHtml(c) {
     const r = knownRaw(c, defaultVariant(c));
-    return r ? `<small>RAW</small>${money(r.price)}` : '<span class="skeleton-line"></span>';
+    return r ? `<small>RAW</small>${r.approx ? '<span class="approx" title="Converted EU price or lowest listing — no recent US sales">≈</span>' : ''}${money(r.price)}` : '<span class="skeleton-line"></span>';
   }
 
   // Render a result grid. `scores` (Map id -> 0…1) adds visual-match badges.
@@ -963,14 +964,20 @@
     const qty = Math.max(1, parseInt($('#qtyInput')?.value, 10) || 1);
     const r = raw || knownRaw(card, variant);
     const psa10 = graded?.prices?.['PSA 10'];
-    $('#rawValue').innerHTML = r?.price != null ? money(r.price) : (loading ? '<span class="skeleton-line"></span>' : '—');
+    $('#rawValue').innerHTML = r?.price != null ? `${r.approx ? '<span class="approx">≈</span>' : ''}${money(r.price)}` : (loading ? '<span class="skeleton-line"></span>' : '—');
     $('#rawFoot').textContent = r?.price != null
-      ? `${variant ? (VARIANT_LABELS[variant] || variant) + ' · ' : ''}${qty > 1 ? `${qty}× = ${money(r.price * qty)}` : 'market price'}`
+      ? `${variant ? (VARIANT_LABELS[variant] || variant) + ' · ' : ''}${qty > 1 ? `${qty}× = ${money(r.price * qty)}` : r.approx ? (r.source === 'Cardmarket' ? 'EU market price' : 'lowest listing') : 'market price'}`
       : (loading ? 'Fetching market price…' : 'No sales data yet');
     $('#rawSrc').textContent = r?.source || '';
-    $('#psaValue').innerHTML = psa10 != null ? money(psa10) : (loading ? '<span class="skeleton-line"></span>' : '—');
+    $('#rawSrc').title = r?.note || '';
+    const psaEst = graded?.estimated?.includes('PSA 10');
+    $('#psaValue').innerHTML = psa10 != null ? `${psaEst ? '<span class="approx">≈</span>' : ''}${money(psa10)}` : (loading ? '<span class="skeleton-line"></span>' : '—');
     const base = graded?.prices?.Ungraded ?? r?.price;
-    $('#psaFoot').textContent = psa10 != null && base ? `${(psa10 / base).toFixed(1)}× ungraded` : (loading ? 'Fetching graded sales…' : 'No graded sales found');
+    $('#psaFoot').textContent = psa10 != null && base
+      ? (psaEst ? 'estimate — no recent PSA 10 sales' : `${(psa10 / base).toFixed(1)}× ungraded`)
+      : (loading ? 'Fetching graded sales…' : 'No graded sales found');
+    const psaSrc = $('#psaValue')?.closest('.ph')?.querySelector('.src');
+    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : 'PriceCharting';
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
   }
@@ -992,21 +999,25 @@
       return;
     }
     const max = Math.max(...ladderKeys.map((k) => p[k]), rawPrice || 0);
-    const rung = (label, val, cls = '') => `<div class="rung ${cls}">
-        <span class="lbl">${esc(label)}</span>
+    const est = new Set(graded.estimated || []);
+    const rung = (label, val, cls = '', key = null) => `<div class="rung ${cls} ${key && est.has(key) ? 'est' : ''}">
+        <span class="lbl">${esc(label)}${key && est.has(key) ? ' <em class="est-tag">est.</em>' : ''}</span>
         <div class="bar"><i style="width:${Math.max(2, (val / max) * 100).toFixed(1)}%"></i></div>
-        <span class="val"><b>${money(val)}</b>${rawPrice && cls !== 'raw' ? `<small>${(val / rawPrice).toFixed(1)}× ungraded</small>` : ''}</span>
+        <span class="val"><b>${key && est.has(key) ? '≈' : ''}${money(val)}</b>${rawPrice && cls !== 'raw' ? `<small>${(val / rawPrice).toFixed(1)}× ungraded</small>` : ''}</span>
       </div>`;
     const others = Object.keys(p).filter((k) => k !== 'Ungraded' && !ladderKeys.includes(k));
     box.innerHTML = `
       <div class="ladder">
-        ${ladderKeys.map((k) => rung(gradeLabel(k), p[k])).join('')}
+        ${ladderKeys.map((k) => rung(gradeLabel(k), p[k], '', k)).join('')}
         ${rawPrice != null ? rung('Ungraded', rawPrice, 'raw') : ''}
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
-      <p class="note">Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.
-      Values are recent sold listings. Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
+      ${est.size ? `<p class="est-note"><b>≈ Estimated:</b> ${[...est].map(gradeLabel).join(', ')} ${est.size === 1 ? 'has' : 'have'} no recent graded sales, so ${est.size === 1 ? 'it’s' : 'they’re'} estimated ${graded.estimateBasis === 'graded' ? 'from this card’s real graded sales' : 'from its raw price'} using typical PSA premiums. Treat as a rough guide.</p>` : ''}
+      <p class="note">${graded.source === 'Estimate'
+        ? `No graded sales were found on PriceCharting for this card. <a href="${esc(graded.url)}" target="_blank" rel="noopener">Search PriceCharting ↗</a>`
+        : `Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.`}
+      Real values are recent sold listings. Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
       Grades 9 and below are PriceCharting's “Grade N” averages, made up mostly of PSA sales; 9.5 is mostly BGS/CGC.</p>`;
   }
 
@@ -1999,7 +2010,7 @@
       const raw = res.raw?.price ?? itemPrice(item);
       const at = p[key];
       box.innerHTML = `<div class="gv">
-          <div><span class="eyebrow">${esc(item.card.name)} at PSA ${grade}</span><b class="num">${at != null ? money(at) : 'No sales data'}</b></div>
+          <div><span class="eyebrow">${esc(item.card.name)} at PSA ${grade}${res.graded?.estimated?.includes(key) ? ' (estimate)' : ''}</span><b class="num">${at != null ? `${res.graded?.estimated?.includes(key) ? '≈' : ''}${money(at)}` : 'No sales data'}</b></div>
           <div><span class="eyebrow">Raw</span><b class="num">${money(raw)}</b></div>
           ${at != null && raw ? `<div><span class="eyebrow">Difference</span><b class="num ${at - raw >= 0 ? 'up' : 'down'}">${signed(at - raw)}</b></div>` : ''}
         </div>`;
