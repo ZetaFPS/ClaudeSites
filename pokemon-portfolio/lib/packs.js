@@ -39,6 +39,15 @@ function tierOf(rarity) {
   return 'C';
 }
 
+// A rule-box Pokémon (ex, GX, V, VMAX, VSTAR…) is never a common, uncommon or plain rare in a
+// real pack — if the data labels one that way (it happens with new sets), treat it as a hit so it
+// can only come from the rare slot.
+const RULE_BOX = /(\s|-)(ex|EX|GX|V|VMAX|VSTAR|V-UNION|LV\.X|BREAK)$|\bex\b(?=\s|$)/;
+function cardTier(c) {
+  const t = tierOf(c.rarity);
+  return (t === 'C' || t === 'U' || t === 'R' || t === 'H') && RULE_BOX.test(String(c.name || '')) ? 'X' : t;
+}
+
 /* ---------------- pack formats ---------------- */
 // slots: [{ w: {tier: weight}, n: count, reverse?, foil?, rare? }] — w picks a tier from those
 // present in the set. "SUB" is the set's merged subset (see SUBSETS).
@@ -154,6 +163,7 @@ function cel30Pools(cards) {
     if (/pikachu/.test(r) || (/pikachu/i.test(c.name) && !/\bex\b/i.test(c.name) && !CEL30_HITS.some(([, t]) => t(r)))) { g.PK.push(c); continue; }
     const h = CEL30_HITS.find(([, t]) => t(r));
     if (h) (g.hits[h[0]] ||= []).push(c);
+    else if (RULE_BOX.test(String(c.name || ''))) (g.hits.DR ||= []).push(c); // a mislabelled ex is a Double Rare
     else if (r === 'common' || r === 'uncommon') g.CU.push(c);
     else if (r) g.RARE.push(c); // "Rare", "Rare Holo", "Holo Rare" …
   }
@@ -240,7 +250,7 @@ function createPacks({ catalog, log = console }) {
     const designs = (detail?.boosters || []).map((b) => b.artwork_front || b.artworkFront).filter((u) => typeof u === 'string' && /^https:\/\//.test(u));
     return designs.map((u) => (/\.(png|webp|jpe?g)$/i.test(u) ? [u] : [`${u}.webp`, `${u}.png`, `${u}/high.webp`, `${u}/high.png`, u]));
   }
-  const rank = (c) => ({ S: 7, HR: 6, I: 5, X: 4, H: 3, R: 2 }[tierOf(c.rarity)] || 0);
+  const rank = (c) => ({ S: 7, HR: 6, I: 5, X: 4, H: 3, R: 2 }[cardTier(c)] || 0);
 
   function build() {
     const cards = catalog.peek('en');
@@ -343,7 +353,7 @@ function createPacks({ catalog, log = console }) {
     const head = { id: set.id, name: set.name, released: set.released, logo: set.logo, format: { era: set.format.era, size: set.format.size, note: set.format.note } };
     if (set.format.special === 'cel30') return { set: head, cards: openCel30(entry.cards).map(({ c, pull }) => ({ ...liteCard(c), pull })) };
     const pools = {};
-    for (const c of entry.cards) (pools[tierOf(c.rarity)] ||= []).push(c);
+    for (const c of entry.cards) (pools[cardTier(c)] ||= []).push(c);
     if (set.subset) pools.SUB = set.subset.cards;
     const used = new Set();
     const out = [];
@@ -352,7 +362,7 @@ function createPacks({ catalog, log = console }) {
         const d = drawSlot(slot.w, pools, used);
         if (!d) continue;
         const sub = d.tier === 'SUB';
-        const tier = sub ? (['S', 'HR', 'X'].includes(tierOf(d.c.rarity)) ? tierOf(d.c.rarity) : 'I') : d.tier;
+        const tier = sub ? (['S', 'HR', 'X'].includes(cardTier(d.c)) ? cardTier(d.c) : 'I') : d.tier;
         out.push({
           ...liteCard(d.c),
           pull: {
@@ -389,4 +399,4 @@ function createPacks({ catalog, log = console }) {
   };
 }
 
-module.exports = { createPacks, tierOf, formatFor };
+module.exports = { createPacks, tierOf, cardTier, formatFor };

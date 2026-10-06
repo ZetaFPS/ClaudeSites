@@ -64,7 +64,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   1/4, Illustration Rare 1/6, Classic Collection 1/11, SIR 1/20, Futuristic Rare 1/103, RGB 1/4000).
   The pack shown is the set's real booster pack: the official pack artwork from TCGdex (a random
   one of the set's pack designs each time), else a photo from PriceCharting (background cut away),
-  else a drawn pack. Hits arrive face-down with a glow and flip on their own, slower than the rest. The summary shows what the pack would be worth.
+  else a drawn pack. Hits are revealed by a slower swipe and land with a glow and burst. A card
+  named ex/GX/V/VMAX/VSTAR can only come from the rare slot even if the data mislabels its rarity,
+  so packs never get several ex like they can't in real life (≈1 in 4 packs has an ex; 2 ex —
+  a rare-slot ex plus an SIR ex — is ≈0.3%). The summary shows what the pack would be worth.
   Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).

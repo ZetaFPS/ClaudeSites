@@ -1568,15 +1568,14 @@
   function startReveal(pack) {
     packs.cards = pack.cards;
     packs.i = 0;
+    packs.revealing = false;
     const n = pack.cards.length;
     $('#revealSet').textContent = pack.set.name;
     const stage = $('#revealStage');
     stage.innerHTML = pack.cards.map((c, i) => {
       const t = c.pull || {};
-      // Suspense: a hit arrives face-down and flips by itself, slower than the other cards.
-      const down = !!t.hit;
       const url = c.images?.large || c.images?.small;
-      return `<div class="rcard enter t-${t.tier} ${t.reverse || t.foil ? 'rev' : ''} ${t.hit ? 'hit' : ''} ${down ? 'down' : ''}" data-ri="${i}" style="z-index:${n - i}">
+      return `<div class="rcard enter t-${t.tier} ${t.reverse || t.foil ? 'rev' : ''} ${t.hit ? 'hit' : ''}" data-ri="${i}" style="z-index:${n - i}">
           <div class="rcard-inner">
             <div class="rface front"><img ${imgAttrs({ id: c.id, images: { small: url, large: url } }, 'large')} alt="${esc(c.name)}"><div class="foil"></div></div>
             <div class="rface back"><span class="ball"></span></div>
@@ -1598,30 +1597,36 @@
     const c = packs.cards[packs.i];
     $('#revealCount').textContent = `${Math.min(packs.i + 1, n)} / ${n}`;
     if (!el || !c) return;
-    const down = el.classList.contains('down');
+    $$('#revealStage .rcard.current').forEach((x) => x.classList.remove('current'));
+    el.classList.add('current'); // the glow only shows on the card being looked at
     const t = c.pull || {};
     const cap = $('#revealCap');
-    cap.classList.toggle('hidden', down);
+    cap.classList.remove('hidden');
     cap.innerHTML = `<b>${esc(c.name)}</b><span>${esc(c.rarity || 'Common')}${t.reverse ? '<i class="tag">Reverse Holo</i>' : ''}${t.pikachu ? '<i class="tag hit">Anniversary Pikachu</i>' : ''}${(t.hit || t.tier === 'H') && !t.pikachu ? `<i class="tag ${t.hit ? 'hit' : ''}">${esc(TIER_NAMES[t.tier] || 'Rare')}</i>` : ''}</span>`;
-    $('#revealHint').textContent = down ? 'Something special…' : packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
-    if (down && !el.dataset.flipping) {
-      el.dataset.flipping = '1';
-      setTimeout(() => revealHit(el), 1500);
-    }
-  }
-  function revealHit(el) {
-    if (!el.isConnected || $('#reveal').hidden) return;
-    el.classList.remove('down');
-    const burst = document.createElement('span');
-    burst.className = `burst t-${packs.cards[+el.dataset.ri].pull.tier}`;
-    $('#revealStage').append(burst);
-    setTimeout(() => burst.remove(), 1100);
-    setTimeout(updateReveal, 900);
+    $('#revealHint').textContent = packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
   }
   function advanceReveal() {
     const el = currentCardEl();
     if (!el) return finishReveal();
-    if (el.classList.contains('down')) return; // a hit is revealing itself
+    if (packs.revealing) return;
+    const next = packs.cards[packs.i + 1];
+    if (next?.pull?.hit) {
+      // A hit: the card in front slides away slowly, then the hit lands with a burst.
+      packs.revealing = true;
+      $('#revealCap').classList.add('hidden');
+      $('#revealHint').textContent = 'Something special…';
+      el.classList.add('slow', 'gone');
+      packs.i++;
+      setTimeout(() => {
+        packs.revealing = false;
+        const burst = document.createElement('span');
+        burst.className = `burst t-${next.pull.tier}`;
+        $('#revealStage').append(burst);
+        setTimeout(() => burst.remove(), 1100);
+        updateReveal();
+      }, 1300);
+      return;
+    }
     el.classList.add('gone');
     packs.i++;
     if (packs.i >= packs.cards.length) setTimeout(finishReveal, 420);
