@@ -56,7 +56,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots
   don't produce fake corner dings or off-centering:
   - *Centering*: border widths measured in mm on every side → ratios like `55/45` (L/R and T/B),
-    front and back, checked against PSA's centering standards
+    front and back, checked against PSA's centering standards. The border's inner edge is found as
+    a sharp colour step between two flat colours, so subtle edges (silver border next to a light
+    frame) are measured and glare gradients are not mistaken for an edge. With the card selected,
+    the official image's artwork is lined up with the photo's to cross-check each border. If the
+    front can't be measured, centering is shown as "—" and left out of the grade (never assumed 10)
   - *Edges*: whitening/chipping along each edge
   - *Corners*: wear and dings (compared with the card's die-cut corner shape)
   - *Surface*: creases (long, straight, continuous thin lines on the back — curved or broken design
@@ -73,8 +77,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   is then lined up with your photo and colour-matched, so the card's own artwork, printed lines and
   logos are ignored: creases and marks are found on the *front* too (lines and spots that aren't on
   the official image), and you see the card's value at the estimated grade. If the photo doesn't
-  match the selected card, you're told and it's ignored. On the back, the POKéMON logos' letters
-  line up in long straight lines, so shallow lines inside the logo bands aren't counted as creases.
+  match the selected card, you're told and it's ignored. On the back, the POKéMON logos and their
+  swirl outlines line up in long straight lines, so a line lying mostly inside the logo areas isn't
+  counted as a crease, and a crease must be continuous along at least 80% of its length.
   The report shows what was measured on the straightened photos. (`public/grader.js`; runs entirely in the browser.)
 - Works on phones, tablets and desktops: on large screens you get a sidebar, a dashboard layout,
   a card-grid collection and a side-by-side card view.

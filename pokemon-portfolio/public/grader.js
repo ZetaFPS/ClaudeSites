@@ -260,29 +260,53 @@
   function pixels(card) { return ctx2d(card).getImageData(0, 0, CW, CH).data; }
   const P = (px, x, y) => { const i = (y * CW + x) * 4; return [px[i], px[i + 1], px[i + 2]]; };
 
-  // Border width on each side (mm), scanning inward until the colour stops matching the
-  // border's own colour. Returns null for a side that has no measurable border (full art).
+  // Border width on each side (mm). Along 40 lines across each side we look for where the border
+  // ends: the first clear *step* in colour going inward (average colour just before vs just after),
+  // judged against how much the border itself varies. A step works for subtle edges too (a silver
+  // border next to a light grey frame) where a fixed colour-difference threshold would run past
+  // the edge. Returns null for a side with no consistent border (full art).
   function borders(px) {
+    const W5 = 5; // window (px) on each side of a candidate edge
     const side = (name) => {
       const vals = [];
+      const maxM = 12 * MM;
       for (let i = 0; i < 40; i++) {
         const f = 0.25 + 0.5 * i / 39;
-        const coord = (m) => {
-          // m = distance from this side's edge (px) → (x, y)
-          if (name === 'left') return [m, Math.round(CH * f)];
-          if (name === 'right') return [CW - 1 - m, Math.round(CH * f)];
-          if (name === 'top') return [Math.round(CW * f), m];
-          return [Math.round(CW * f), CH - 1 - m];
+        const coord = (m, o) => {
+          if (name === 'left') return [m, Math.round(CH * f) + o];
+          if (name === 'right') return [CW - 1 - m, Math.round(CH * f) + o];
+          if (name === 'top') return [Math.round(CW * f) + o, m];
+          return [Math.round(CW * f) + o, CH - 1 - m];
         };
-        const ref = medColor([10, 12, 14, 16, 18].map((m) => P(px, ...coord(m))));
-        const noise = Math.max(...[10, 12, 14, 16, 18].map((m) => dist3(P(px, ...coord(m)), ref)));
-        const thr = Math.max(42, noise * 3);
-        for (let m = 18; m < 16 * MM; m++) {
-          if (dist3(P(px, ...coord(m)), ref) > thr && dist3(P(px, ...coord(m + 1)), ref) > thr && dist3(P(px, ...coord(m + 2)), ref) > thr) {
-            vals.push(m);
-            break;
-          }
+        // Colour profile going inward, averaged over 5 px across the line (less noise).
+        const prof = [];
+        for (let m = 0; m <= maxM + 14; m++) {
+          const c = [0, 0, 0];
+          for (let o = -2; o <= 2; o++) { const p = P(px, ...coord(m, o)); c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }
+          prof.push([c[0] / 5, c[1] / 5, c[2] / 5]);
         }
+        const mean = (a, b) => { const c = [0, 0, 0]; for (let k = a; k < b; k++) for (let ch = 0; ch < 3; ch++) c[ch] += prof[k][ch]; return c.map((v) => v / (b - a)); };
+        const step = (m) => dist3(mean(m - W5, m), mean(m, m + W5));
+        // Typical step size along the profile (most of it is flat print) = the noise level.
+        const base = [];
+        for (let m = 10; m < maxM; m += 2) base.push(step(m));
+        const noise = median(base);
+        const thr = Math.max(12, noise * 4);
+        // A real edge is a step between two flat colours. Glare or a foil gradient is a steady
+        // slope: the colour keeps changing just before and after, so it's skipped.
+        const slope = (a, b) => dist3(mean(a, a + 5), mean(b, b + 5));
+        let found = null;
+        for (let m = 10; m < maxM; m++) {
+          if (step(m) < thr) continue;
+          // Walk to the strongest point of this step.
+          let k = m;
+          while (k + 1 < maxM && step(k + 1) >= step(k)) k++;
+          const pre = k >= 14 ? slope(k - 14, k - 9) : 0;
+          const post = slope(k + 4, k + 9);
+          if (step(k) >= 2 * Math.max(pre, post)) { found = k; break; }
+          m = k;
+        }
+        if (found != null) vals.push(found);
       }
       if (vals.length < 24) return null;
       const iqr = quantile(vals, 0.75) - quantile(vals, 0.25);
@@ -471,9 +495,11 @@
   //
   // opts.known: half-resolution mask of lines that belong to the printed design (from the official
   //             card image) — those pixels are ignored.
-  // opts.logoBands: the back of an English card has the POKéMON logo near the top and bottom; its
-  //             letters line up in long, shallow straight lines, so for shallow lines only the part
-  //             outside those bands counts.
+  // opts.logoBands: the back of an English card has the POKéMON logo and its swirl outlines near
+  //             the top and bottom; their letters and strokes line up in long straight lines at all
+  //             sorts of angles, so a line lying mostly (60%+) inside those bands is ignored. (A crease
+  //             goes through the card, so one hidden there still shows on the front, which is
+  //             checked against the official image.)
   function ridgeMap(L, w, h, inset, known) {
     const d = 2, t = 10;
     const pts = [];
@@ -561,14 +587,14 @@
         if (run > longest && cov >= 0.6) { longest = run; bestFrom = start; bestTo = i; bestCov = cov; }
       }
       let runMm = (longest * 2) / MM;
-      const fromHoriz = Math.min(Math.abs(c.deg - 90), 180 - Math.abs(c.deg - 90));
-      if (opts.logoBands && fromHoriz <= 35 && longest > 0) {
+      if (opts.logoBands && longest > 0) {
         let outside = 0;
         for (let i = bestFrom; i <= bestTo; i++) {
           const fy = (seg[1] + (seg[3] - seg[1]) * i / n) / h;
           if (!LOGO_BANDS.some(([a, b]) => fy >= a && fy <= b)) outside++;
         }
-        runMm = (outside * 2) / MM;
+        // Mostly inside the logo areas → part of the design. Otherwise the whole line counts.
+        if (outside < (bestTo - bestFrom + 1) * 0.4) runMm = (outside * 2) / MM;
       }
       // Straightness: fit offset = a + b·t + c·t² over the run. A gentle arc in the card's design
       // bends measurably (its sagitta); a crease doesn't.
@@ -588,15 +614,18 @@
       }
       if (!best || runMm > best.runMm) {
         const at = (i) => [seg[0] + (seg[2] - seg[0]) * i / n, seg[1] + (seg[3] - seg[1]) * i / n];
-        best = { ...c, runMm, sides, line: [...at(bestFrom), ...at(bestTo)] };
+        best = { ...c, runMm, sides, cov: bestCov, line: [...at(bestFrom), ...at(bestTo)] };
       }
     }
     if (!best || best.runMm < 18) return { found: false, strength: best ? best.runMm : 0 };
     // Short straight lines (18–30 mm) can be part of the card's printed design; report them as
     // "check this" without affecting the grade. Long ones are treated as creases.
+    // A crease is a continuous line: at least 80% of its length visible. Patchier straight lines
+    // are reported as "check this" only.
+    const solid = best.cov >= 0.8;
     return {
-      found: best.runMm >= 30,
-      faint: best.runMm < 30,
+      found: best.runMm >= 30 && solid,
+      faint: best.runMm < 30 || !solid,
       strength: best.density,
       lengthMm: best.runMm,
       sides: best.sides,
@@ -775,21 +804,59 @@
     return out;
   }
   const ART_DIFF_LIMIT = 60;
-  function prepareReference(refImg, card, px) {
+  // Line the official image's *artwork* up with the photo's (the area inside the borders), first
+  // coarsely, then to the pixel. Aligning the content rather than the card's outline is what lets
+  // us read the centering off the alignment: how far the printed design sits from each edge.
+  function alignContent(refImg, card) {
     const S = 5, lw = CW / S, lh = Math.round(CH / S);
     const photoLow = lowLum(card, lw, lh);
-    let best = { score: -1 };
-    for (const s of [0.97, 0.985, 1, 1.015, 1.03]) for (let dx = -3; dx <= 3; dx++) for (let dy = -3; dy <= 3; dy++) {
-      const score = ncc(photoLow, lowLum(refImg, lw, lh, { s, dx, dy }), lw, lh, 3);
-      if (score > best.score) best = { score, s, dx, dy };
+    let best = { score: -2 };
+    for (const s of [0.98, 0.99, 1, 1.01, 1.02]) for (let dx = -8; dx <= 8; dx++) for (let dy = -8; dy <= 8; dy++) {
+      const score = ncc(photoLow, lowLum(refImg, lw, lh, { s, dx, dy }), lw, lh, 12);
+      if (score > best.score) best = { score, s, dx: dx * S, dy: dy * S };
     }
+    // Refine at half resolution, 1 px (0.1 mm) steps.
+    const hw = CW / 2, hh = CH / 2;
+    const photoHalf = lowLum(card, hw, hh);
+    const at = (s, dx, dy) => ncc(photoHalf, lowLum(refImg, hw, hh, { s, dx: dx / 2, dy: dy / 2 }), hw, hh, 30);
+    let fine = { ...best, score: at(best.s, best.dx, best.dy) };
+    for (let round = 0; round < 2; round++) {
+      const c = { ...fine };
+      for (let dx = c.dx - 5; dx <= c.dx + 5; dx++) for (let dy = c.dy - 5; dy <= c.dy + 5; dy++) {
+        const sc = at(c.s, dx, dy);
+        if (sc > fine.score) fine = { s: c.s, dx, dy, score: sc };
+      }
+      for (const s of [fine.s - 0.004, fine.s + 0.004]) {
+        const sc = at(s, fine.dx, fine.dy);
+        if (sc > fine.score) fine = { ...fine, s, score: sc };
+      }
+    }
+    return fine;
+  }
+  function prepareReference(refImg, card, px) {
+    const best = alignContent(refImg, card);
     if (best.score < 0.45) return { ok: false, match: best.score };
-    // Full-resolution reference with the best alignment.
+    // The official image's own borders (it may not be perfectly centred itself).
+    const c0 = canvas(CW, CH);
+    const x0 = ctx2d(c0);
+    x0.imageSmoothingQuality = 'high';
+    x0.drawImage(refImg, 0, 0, CW, CH);
+    const refB = borders(x0.getImageData(0, 0, CW, CH).data);
+    // Where those border lines land on the photo = the photo's border widths.
+    const ox = (CW / 2) * (1 - best.s) + best.dx, oy = (CH / 2) * (1 - best.s) + best.dy;
+    const mm = (v) => (v != null && v > 0.2 && v < 12 ? Math.round(v * 100) / 100 : null);
+    const centering = {
+      left: refB.left == null ? null : mm((best.s * refB.left * MM + ox) / MM),
+      right: refB.right == null ? null : mm((CW - (best.s * (CW - refB.right * MM) + ox)) / MM),
+      top: refB.top == null ? null : mm((best.s * refB.top * MM + oy) / MM),
+      bottom: refB.bottom == null ? null : mm((CH - (best.s * (CH - refB.bottom * MM) + oy)) / MM),
+    };
+    // Full-resolution reference with that alignment.
     const c = canvas(CW, CH);
     const x = ctx2d(c);
     x.fillStyle = '#000'; x.fillRect(0, 0, CW, CH);
     x.imageSmoothingQuality = 'high';
-    x.setTransform(best.s, 0, 0, best.s, (CW / 2) * (1 - best.s) + best.dx * S, (CH / 2) * (1 - best.s) + best.dy * S);
+    x.setTransform(best.s, 0, 0, best.s, ox, oy);
     x.drawImage(refImg, 0, 0, CW, CH);
     const ref = x.getImageData(0, 0, CW, CH).data;
     // Match colours: photo ≈ a·ref + b per channel (lighting and white balance).
@@ -817,7 +884,7 @@
       const g = Math.max(Math.abs(Lr[y * w + xx + 1] - Lr[y * w + xx - 1]), Math.abs(Lr[(y + 1) * w + xx] - Lr[(y - 1) * w + xx]));
       if (g > 20) strong[y * w + xx] = 1;
     }
-    return { ok: true, match: best.score, artDiff, px: ref, Lr, known, busy: dilate(strong, w, h, 4) };
+    return { ok: true, match: best.score, artDiff, centering, px: ref, Lr, known, busy: dilate(strong, w, h, 4) };
   }
   // Marks on the card's surface that aren't in the official image: dark spots, stains, dents.
   // Compared after removing broad lighting differences, and only where the design is smooth.
@@ -856,10 +923,20 @@
     const loc = locate(photo);
     if (!loc) return { label, error: `Couldn’t find the card in the ${label} photo. Lay it on a plain, dark surface with some space around it.` };
     const px = pixels(loc.card);
-    const border = borders(px);
+    const ref = refImg ? prepareReference(refImg, loc.card, px) : null;
+    // Centering: measured on the photo; the official image fills in a side the photo couldn't
+    // measure, or corrects one that disagrees with it by more than 1 mm.
+    let border = borders(px), centeringFrom = 'photo';
+    if (ref?.ok && ref.centering) {
+      const merged = { ...border };
+      for (const k of SIDES) {
+        const r = ref.centering[k];
+        if (r != null && (merged[k] == null || Math.abs(merged[k] - r) > 1)) { merged[k] = r; centeringFrom = 'photo + official image'; }
+      }
+      border = merged;
+    }
     const ed = edges(px);
     const co = corners(px, loc.bg, loc.thr);
-    const ref = refImg ? prepareReference(refImg, loc.card, px) : null;
     // Creases: always checked on the back (logo bands excepted); on the front only when the
     // official image is there to separate the design's own lines from damage.
     let cr = { found: false };
@@ -868,7 +945,7 @@
     const sp = spots(px, border);
     if (ref?.ok) sp.push(...surfaceMarks(px, ref).slice(0, 8));
     const gl = glare(px);
-    return { label, loc, border, edges: ed, corners: co, crease: cr, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff } };
+    return { label, loc, border, centeringFrom, edges: ed, corners: co, crease: cr, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff, centering: ref.centering || null } };
   }
 
   // opts.reference: the official image of the card (an <img> or bitmap), for the front.
@@ -898,7 +975,8 @@
       const tb = centeringRatio(s.border.top, s.border.bottom);
       cen[s.label] = { lr, tb, worst: Math.max(worstShare(lr) ?? 0, worstShare(tb) ?? 0) || null, mm: s.border, measurable: lr != null || tb != null };
     }
-    const centeringGrade = gradeCentering(cen.front?.worst ?? null, cen.back?.worst ?? null);
+    // Not measurable (e.g. borderless full art) → left out of the grade rather than counted as 10.
+    const centeringGrade = cen.front?.measurable ? gradeCentering(cen.front.worst, cen.back?.worst ?? null) : null;
 
     // Edges
     const sideNames = ['top', 'right', 'bottom', 'left'];
@@ -920,8 +998,9 @@
     if (crease) surfaceGrade = Math.min(surfaceGrade, crease.strength > 0.8 && crease.lengthMm > 30 ? 4 : 5);
 
     const subs = { centering: centeringGrade, corners: cornersGrade, edges: edgesGrade, surface: surfaceGrade };
-    let overall = Math.min(Math.round((centeringGrade + cornersGrade + edgesGrade + surfaceGrade) / 4), Math.floor(Math.min(...Object.values(subs))) + 1);
-    overall = Math.min(overall, centeringGrade); // PSA caps a grade by its centering
+    const counted = Object.values(subs).filter((v) => v != null);
+    let overall = Math.min(Math.round(counted.reduce((a, b) => a + b, 0) / counted.length), Math.floor(Math.min(...counted)) + 1);
+    if (centeringGrade != null) overall = Math.min(overall, centeringGrade); // PSA caps a grade by its centering
     if (crease) overall = Math.min(overall, surfaceGrade + 1);
     overall = clamp(overall, 1, 10);
 
@@ -949,7 +1028,11 @@
     const lit = sides.filter((s) => SIDES.some((n) => s.edges[n].shine > 0.04 || s.edges[n].uneven > 35) || Object.values(s.corners).some((c) => c.shine > 0.08) || s.glare > 0.004);
     if (lit.length) findings.push({ level: 'info', text: `Reflections / holo shine detected on the ${lit.map((s) => s.label).join(' and ')} — recognised as light, not wear, and not counted against the grade` });
     if (cen.front?.worst > 60) findings.push({ level: cen.front.worst > 70 ? 'bad' : 'warn', text: `Front is off-center (${fmtRatio(cen.front)})` });
-    if (!cen.front?.measurable) findings.push({ level: 'info', text: 'Front centering couldn’t be measured (full-art or borderless card?)' });
+    if (!cen.front?.measurable) {
+      findings.push({ level: 'warn', text: 'Front centering couldn’t be measured, so it isn’t included in the grade — select the card under “Which card is this?” to measure it against the official image, or retake the photo straight on with even light' });
+    } else if (front.centeringFrom !== 'photo') {
+      findings.push({ level: 'info', text: 'Front centering measured with help from the official card image' });
+    }
     if (!findings.some((f) => f.level === 'bad' || f.level === 'warn')) findings.unshift({ level: 'good', text: 'No wear, creases or marks detected' });
 
     const confidence = warnings.length === 0 ? 'good' : warnings.length === 1 ? 'fair' : 'low';

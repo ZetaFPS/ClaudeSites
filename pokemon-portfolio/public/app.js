@@ -2211,8 +2211,8 @@
     const out = $('#gradeResult');
     const sub = (label, g, note) => `
       <div class="subgrade">
-        <div class="sg-top"><span>${label}</span><b class="num">${g}</b></div>
-        <div class="bar"><i style="width:${g * 10}%" class="${g >= 9 ? 'hi' : g >= 7 ? 'mid' : 'lo'}"></i></div>
+        <div class="sg-top"><span>${label}</span><b class="num">${g ?? '—'}</b></div>
+        <div class="bar"><i style="width:${(g ?? 0) * 10}%" class="${g >= 9 ? 'hi' : g >= 7 ? 'mid' : 'lo'}"></i></div>
         ${note ? `<small>${note}</small>` : ''}
       </div>`;
     const ratio = (v) => (v == null ? '—' : `${Math.round(v)}/${100 - Math.round(v)}`);
@@ -2243,7 +2243,7 @@
           <div class="eyebrow">PSA-style estimate · likely range ${r.range[0] === r.range[1] ? r.range[0] : `${r.range[0]}–${r.range[1]}`}</div>
           <div class="conf conf-${r.confidence}">Photo quality: ${r.confidence}</div>
           <div class="subgrades">
-            ${sub('Centering', r.subs.centering, r.centering.front ? `Front ${ratio(r.centering.front.lr)} L/R · ${ratio(r.centering.front.tb)} T/B` : '')}
+            ${sub('Centering', r.subs.centering, r.subs.centering == null ? 'Couldn’t measure — not counted' : r.centering.front ? `Front ${ratio(r.centering.front.lr)} L/R · ${ratio(r.centering.front.tb)} T/B${r.centering.back?.measurable ? ` · Back ${ratio(r.centering.back.lr)} L/R` : ''}` : '')}
             ${sub('Corners', r.subs.corners)}
             ${sub('Edges', r.subs.edges)}
             ${sub('Surface', r.subs.surface)}
