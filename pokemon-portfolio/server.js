@@ -11,6 +11,7 @@ const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
 const { createCatalog } = require('./lib/catalog');
+const { createPacks } = require('./lib/packs');
 const CardDescriptor = require('./public/descriptor');
 
 const PORT = +process.env.PORT || 3000;
@@ -19,7 +20,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, visualIndex, catalog; // set up in start()
+let store, auth, leaderboard, groupsApi, visualIndex, catalog, packs; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -297,6 +298,21 @@ async function api(req, res, url) {
     }));
   }
 
+  // --- pack simulator (just for fun — nothing is added to collections) ---
+  if (pathname === '/api/packs' && method === 'GET') {
+    limitApi(req);
+    const list = packs.list();
+    return send(res, 200, list ? { sets: list } : { loading: true, status: catalog.status() });
+  }
+  const pk = pathname.match(/^\/api\/packs\/([A-Za-z0-9._-]{1,40})\/open$/);
+  if (pk && method === 'POST') {
+    limitApi(req);
+    const pack = packs.open(pk[1]);
+    if (!pack) return send(res, 200, { loading: true, status: catalog.status() });
+    if (pack.error) throw httpError(404, 'That set has no booster packs.');
+    return send(res, 200, pack);
+  }
+
   // --- full price breakdown for one card (raw + graded) ---
   const m = decodeURIComponent(pathname).match(/^\/api\/prices\/([A-Za-z0-9._:-]{1,80})$/);
   if (m && method === 'GET') {
@@ -489,6 +505,7 @@ async function start() {
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
   catalog = createCatalog({ store });
+  packs = createPacks({ catalog });
   visualIndex = createVisualIndex({
     store, catalog,
     langs: (process.env.VISUAL_INDEX_LANGS || 'en,ja').split(',').map((l) => l.trim()).filter((l) => l === 'en' || l === 'ja'),

@@ -208,6 +208,10 @@
             <h2>Card index</h2>
             <p class="muted" id="idxSub">Every Pokémon card, newest set first</p>
           </div>
+          <button class="btn primary glow pack-cta" data-goto="packs">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l-1 3H7z"/><rect x="5" y="6" width="14" height="15" rx="2"/><path d="M9 12h6"/></svg>
+            Open packs
+          </button>
         </div>
         <form class="idx-tools" id="idxForm">
           <input type="search" id="idxSearch" placeholder="Search name or number…" aria-label="Search the index" autocomplete="off">
@@ -232,6 +236,26 @@
           <p class="muted" id="idxCount"></p>
           <button class="btn primary glow" id="idxMore" hidden>Load more</button>
         </div>
+      </section>
+      <!-- PACK SIMULATOR -->
+      <section class="view" id="view-packs" aria-label="Pack simulator">
+        <div class="page-head">
+          <div>
+            <h2>Pack simulator</h2>
+            <p class="muted" id="packSub">Pick any set and rip a booster pack — just for fun, nothing is added to your collection.</p>
+          </div>
+        </div>
+        <div id="packPicker">
+          <input type="search" class="pack-search" id="packSearch" placeholder="Find a set…" aria-label="Find a set" autocomplete="off">
+          <div class="pack-sets" id="packSets"></div>
+        </div>
+        <div class="pack-stage" id="packStage" hidden>
+          <button class="link-btn pack-back" id="packBack">← All sets</button>
+          <div class="booster-wrap" id="boosterWrap"></div>
+          <p class="pack-note" id="packNote"></p>
+          <button class="btn primary glow pack-open" id="packOpen">Open pack</button>
+        </div>
+        <div class="pack-summary" id="packSummary" hidden></div>
       </section>
       <!-- LEADERBOARD -->
       <section class="view" id="view-leaders" aria-label="Leaderboard">
@@ -362,11 +386,24 @@
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M9 7h6M9 11h6"/><path d="M9.5 16.5l1.6 1.6 3.4-3.6"/></svg>
         <span>Grade</span>
       </button>
+      <button class="tab tab-wide-only" data-goto="packs">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l-1 3H7z"/><rect x="5" y="6" width="14" height="15" rx="2"/><path d="M9 12h6M10 16h4"/></svg>
+        <span>Packs</span>
+      </button>
       <button class="tab tab-wide-only" data-goto="scan" data-focus-search>
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
         <span>Search</span>
       </button>
     </nav>
+  </div>
+
+  <!-- Pack opening: full-screen reveal -->
+  <div class="reveal" id="reveal" hidden>
+    <div class="reveal-top"><span class="reveal-set" id="revealSet"></span><span class="reveal-count num" id="revealCount"></span></div>
+    <div class="reveal-stage" id="revealStage"></div>
+    <div class="reveal-cap" id="revealCap"></div>
+    <p class="reveal-hint" id="revealHint">Tap to reveal the next card</p>
+    <button class="link-btn reveal-skip" id="revealSkip">Skip to summary</button>
   </div>
 
   <!-- Sheet (card detail / account) -->

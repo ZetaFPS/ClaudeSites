@@ -453,6 +453,8 @@
     if (view === 'scan' && !focusSearch) refreshIndexNote();
     if (view === 'index') openIndex();
     else clearTimeout(idx.retry);
+    if (view === 'packs') openPacksView();
+    else clearTimeout(packs.retry);
     if (view === 'portfolio') renderPortfolio();
     if (view === 'leaders') loadLeaderboard();
     if (view === 'grade') prepareGrader();
@@ -1308,6 +1310,256 @@
   $('#idxSearch').addEventListener('input', () => { clearTimeout(idxTyping); idxTyping = setTimeout(() => loadIndex(true), 350); });
   $('#idxForm').addEventListener('submit', (e) => { e.preventDefault(); clearTimeout(idxTyping); loadIndex(true); });
   for (const id of ['#idxSort', '#idxSet', '#idxLang', '#idxOwned']) $(id).addEventListener('change', () => loadIndex(true));
+
+  /* ================= Pack simulator ================= */
+  // Pick any set, rip a booster and flip through it card by card. Just for fun: nothing is added
+  // to the collection. Packs are built on the server with each era's real slot structure.
+  const packs = { sets: null, set: null, cards: [], i: 0, busy: false, retry: null };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const TIER_NAMES = { H: 'Holo Rare', X: 'Hit!', I: 'Illustration hit!', S: 'Secret rare!' };
+  function openPacksView() {
+    if (!packs.sets) loadPackSets();
+  }
+  async function loadPackSets() {
+    clearTimeout(packs.retry);
+    if (!packs.sets) $('#packSets').innerHTML = Array.from({ length: 8 }, () => '<div class="skeleton" style="height:120px"></div>').join('');
+    try {
+      const r = await api('/api/packs');
+      if (r.loading) {
+        $('#packSets').innerHTML = '<div class="idx-empty glass"><div class="reticle small busy" aria-hidden="true"></div><h3>Loading every set…</h3><p>Fetching the card list for the first time — this takes a minute and only happens once.</p></div>';
+        if ($('#view-packs').classList.contains('active')) packs.retry = setTimeout(loadPackSets, 3000);
+        return;
+      }
+      packs.sets = r.sets;
+      renderPackSets();
+    } catch (e) {
+      $('#packSets').innerHTML = `<div class="idx-empty glass"><h3>Couldn’t load the sets</h3><p>${esc(e.status === 429 ? e.message : 'Check your connection and try again.')}</p></div>`;
+    }
+  }
+  function renderPackSets() {
+    const q = $('#packSearch').value.trim().toLowerCase();
+    const list = (packs.sets || []).filter((st) => !q || st.name.toLowerCase().includes(q) || String(st.series || '').toLowerCase().includes(q));
+    let series = null, html = '';
+    for (const st of list) {
+      if (st.series !== series) { series = st.series; html += `<h3 class="pack-series">${esc(series || 'Other')}</h3>`; }
+      html += `<button class="pack-set" data-set="${esc(st.id)}">
+          <span class="logo"><img class="set-logo" src="${esc(st.logo)}" alt="${esc(st.name)}" loading="lazy"></span>
+          <b>${esc(st.name)}</b><small>${esc(String(st.released || '').slice(0, 4))} · ${st.size} cards per pack</small>
+        </button>`;
+    }
+    $('#packSets').innerHTML = html || '<div class="idx-empty glass"><h3>No sets match</h3></div>';
+  }
+  // Set logos that fail to load are replaced by the set's name.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (img instanceof HTMLImageElement && img.classList.contains('set-logo')) img.replaceWith(Object.assign(document.createElement('span'), { className: 'fallback', textContent: img.alt }));
+  }, true);
+  $('#packSearch').addEventListener('input', renderPackSets);
+  $('#packSets').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-set]');
+    if (b) showPack(packs.sets.find((st) => st.id === b.dataset.set));
+  });
+  $('#packBack').addEventListener('click', () => showPicker());
+  function showPicker() {
+    $('#packPicker').hidden = false;
+    $('#packStage').hidden = true;
+    $('#packSummary').hidden = true;
+  }
+
+  // Zig-zag crimp edges and a slightly ragged tear line, as clip-path polygons.
+  function zig(yA, yB, n) { return Array.from({ length: n + 1 }, (_, i) => `${(i / n * 100).toFixed(2)}% ${i % 2 ? yB : yA}%`); }
+  function tearLine() { return Array.from({ length: 19 }, (_, i) => `${(i / 18 * 100).toFixed(2)}% ${(15.5 + (i % 2 ? 0.7 : -0.5) + Math.random() * 0.5).toFixed(2)}%`); }
+  function showPack(st) {
+    if (!st) return;
+    packs.set = st;
+    $('#packPicker').hidden = true;
+    $('#packSummary').hidden = true;
+    $('#packStage').hidden = false;
+    let h = 0;
+    for (const ch of st.id) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    const tear = tearLine();
+    const topClip = [...zig(0, 2.2, 28), ...tear.slice().reverse()].join(',');
+    const mainClip = [...tear, ...zig(100, 97.8, 28).reverse()].join(',');
+    const skin = `<div class="skin">
+        ${st.art ? `<div class="art" style="background-image:url('${esc(st.art)}')"></div>` : ''}
+        <div class="crimp top"></div><div class="crimp bottom"></div>
+        <div class="logo"><img class="set-logo" src="${esc(st.logo)}" alt="${esc(st.name)}"></div>
+        <div class="label">BOOSTER PACK · ${st.size} CARDS</div>
+        <div class="sheen"></div>
+      </div>`;
+    $('#boosterWrap').innerHTML = `<div class="booster" id="booster" role="button" tabindex="0" aria-label="Open the ${esc(st.name)} booster pack"
+        style="--pack-a:hsl(${h},70%,28%);--pack-b:hsl(${(h + 60) % 360},65%,40%)">
+        <div class="piece main" style="clip-path:polygon(${mainClip})">${skin}</div>
+        <div class="piece top" style="clip-path:polygon(${topClip})">${skin}</div>
+        <div class="tearline"></div>
+      </div>`;
+    $('#packNote').textContent = `${st.name} · ${st.note}`;
+    $('#packOpen').disabled = false;
+    $('#packOpen').textContent = 'Open pack';
+    packs.busy = false;
+    const booster = $('#booster');
+    booster.addEventListener('click', openPack);
+    booster.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPack(); } });
+    window.scrollTo({ top: 0 });
+  }
+  // Tilt the pack toward the pointer.
+  $('#boosterWrap').addEventListener('pointermove', (e) => {
+    const b = $('#booster');
+    if (!b || packs.busy) return;
+    const r = b.getBoundingClientRect();
+    const dx = (e.clientX - r.left) / r.width - 0.5, dy = (e.clientY - r.top) / r.height - 0.5;
+    b.style.transform = `rotateY(${dx * 22}deg) rotateX(${-dy * 16}deg)`;
+  });
+  $('#boosterWrap').addEventListener('pointerleave', () => { const b = $('#booster'); if (b) b.style.transform = ''; });
+  $('#packOpen').addEventListener('click', openPack);
+
+  const preload = (url) => new Promise((res) => { if (!url) return res(); const i = new Image(); i.onload = i.onerror = res; i.src = url; });
+  async function openPack() {
+    const b = $('#booster');
+    if (packs.busy || !b) return;
+    packs.busy = true;
+    $('#packOpen').disabled = true;
+    $('#packOpen').textContent = 'Opening…';
+    b.style.transform = '';
+    const req = api(`/api/packs/${encodeURIComponent(packs.set.id)}/open`, { method: 'POST', body: {} });
+    b.classList.add('shake');
+    let pack;
+    try {
+      [pack] = await Promise.all([req, sleep(560)]);
+      if (pack.loading || !pack.cards?.length) throw new Error('not ready');
+    } catch (e) {
+      b.classList.remove('shake');
+      toast(e.status === 429 ? e.message : 'Couldn’t open that pack — try again');
+      packs.busy = false;
+      $('#packOpen').disabled = false;
+      $('#packOpen').textContent = 'Open pack';
+      return;
+    }
+    // Load the card pictures while the pack tears open (but don't wait forever).
+    const pics = Promise.race([Promise.all(pack.cards.map((c) => preload(c.images?.large || c.images?.small))), sleep(2600)]);
+    b.classList.remove('shake');
+    b.classList.add('tearing');
+    await sleep(330);
+    b.classList.add('torn');
+    await Promise.all([pics, sleep(900)]);
+    startReveal(pack);
+  }
+
+  function startReveal(pack) {
+    packs.cards = pack.cards;
+    packs.i = 0;
+    const n = pack.cards.length;
+    $('#revealSet').textContent = pack.set.name;
+    const stage = $('#revealStage');
+    stage.innerHTML = pack.cards.map((c, i) => {
+      const t = c.pull || {};
+      // Suspense: the rare slot and any big hit start face-down and flip on tap.
+      const down = t.rare || ['I', 'S'].includes(t.tier);
+      const url = c.images?.large || c.images?.small;
+      return `<div class="rcard enter t-${t.tier} ${t.reverse ? 'rev' : ''} ${t.hit ? 'hit' : ''} ${down ? 'down' : ''}" data-ri="${i}" style="z-index:${n - i}">
+          <div class="rcard-inner">
+            <div class="rface front"><img ${imgAttrs({ id: c.id, images: { small: url, large: url } }, 'large')} alt="${esc(c.name)}"><div class="foil"></div></div>
+            <div class="rface back"><span class="ball"></span></div>
+          </div>
+        </div>`;
+    }).join('');
+    $('#packStage').hidden = true;
+    $('#reveal').hidden = false;
+    document.body.style.overflow = 'hidden';
+    // The stack slides up out of the pack, one card after another.
+    $$('.rcard', stage).forEach((el, i) => setTimeout(() => el.classList.remove('enter'), 60 + (n - 1 - i) * 45));
+    setTimeout(updateReveal, 80);
+    $('#revealStage').focus?.();
+  }
+  function currentCardEl() { return $(`.rcard[data-ri="${packs.i}"]`); }
+  function updateReveal() {
+    const n = packs.cards.length;
+    const el = currentCardEl();
+    const c = packs.cards[packs.i];
+    $('#revealCount').textContent = `${Math.min(packs.i + 1, n)} / ${n}`;
+    if (!el || !c) return;
+    const down = el.classList.contains('down');
+    const t = c.pull || {};
+    const cap = $('#revealCap');
+    cap.classList.toggle('hidden', down);
+    cap.innerHTML = `<b>${esc(c.name)}</b><span>${esc(c.rarity || 'Common')}${t.reverse ? '<i class="tag">Reverse Holo</i>' : ''}${t.hit || t.tier === 'H' ? `<i class="tag ${t.hit ? 'hit' : ''}">${esc(TIER_NAMES[t.tier] || 'Rare')}</i>` : ''}</span>`;
+    $('#revealHint').textContent = down ? (t.rare ? 'Your rare card — tap to flip it!' : 'Something special… tap to flip') : packs.i === n - 1 ? 'Tap to see your whole pack' : 'Tap for the next card';
+  }
+  function advanceReveal() {
+    const el = currentCardEl();
+    if (!el) return finishReveal();
+    if (el.classList.contains('down')) {
+      el.classList.remove('down');
+      if (el.classList.contains('hit')) {
+        const burst = document.createElement('span');
+        burst.className = `burst t-${packs.cards[packs.i].pull.tier}`;
+        $('#revealStage').append(burst);
+        setTimeout(() => burst.remove(), 1100);
+      }
+      setTimeout(updateReveal, 250);
+      return;
+    }
+    el.classList.add('gone');
+    packs.i++;
+    if (packs.i >= packs.cards.length) setTimeout(finishReveal, 420);
+    else updateReveal();
+  }
+  $('#revealStage').addEventListener('click', advanceReveal);
+  document.addEventListener('keydown', (e) => {
+    if ($('#reveal').hidden) return;
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') { e.preventDefault(); advanceReveal(); }
+    if (e.key === 'Escape') finishReveal();
+  });
+  $('#revealSkip').addEventListener('click', finishReveal);
+
+  function finishReveal() {
+    if ($('#reveal').hidden) return;
+    $('#reveal').hidden = true;
+    document.body.style.overflow = '';
+    $('#packStage').hidden = true;
+    const box = $('#packSummary');
+    box.hidden = false;
+    const cards = packs.cards;
+    const variantOf = (c) => (c.pull?.reverse ? 'reverseHolofoil' : null);
+    box.innerHTML = `
+      <div class="head">
+        <div><h3>Your ${esc(packs.set.name)} pack</h3><p class="muted" style="margin:4px 0 0">Just for fun — these cards aren’t added to your collection.</p></div>
+        <div class="value" id="packValue">Pack value: <span class="skeleton-line"></span></div>
+      </div>
+      <div class="pack-grid">${cards.map((c, i) => {
+        const t = c.pull || {};
+        return `<button class="pc t-${t.tier} ${t.hit ? 'hit' : ''}" data-pc="${i}">
+            <img ${imgAttrs(c, 'small')} alt="" loading="lazy">
+            <b>${esc(c.name)}</b><small>${esc(c.rarity || 'Common')}${t.reverse ? ' · Reverse' : ''}</small>
+            <span class="p num" data-pp="${i}"></span>
+          </button>`;
+      }).join('')}</div>
+      <div class="pack-actions">
+        <button class="btn primary glow" id="packAgain">Open another ${esc(packs.set.name)} pack</button>
+        <button class="btn" id="packOther">Choose another set</button>
+      </div>`;
+    $('#packAgain').addEventListener('click', () => showPack(packs.set));
+    $('#packOther').addEventListener('click', showPicker);
+    window.scrollTo({ top: 0 });
+    // What would this pack be worth? (market prices, fetched now)
+    const list = cards.map((c) => ({ id: c.id, variant: variantOf(c) }));
+    fetchRaw(list).then(() => {
+      let total = 0, known = 0;
+      cards.forEach((c, i) => {
+        const p = rawCache.get(`${c.id}|${variantOf(c) || ''}`)?.price;
+        const el = $(`[data-pp="${i}"]`);
+        if (p != null) { total += p; known++; if (el) el.textContent = money(p); }
+        else if (el) el.textContent = '—';
+      });
+      const v = $('#packValue');
+      if (v) v.innerHTML = known ? `Pack value: <b class="num">${money(total)}</b>` : 'Pack value: —';
+    }).catch(() => { const v = $('#packValue'); if (v) v.textContent = ''; });
+  }
+  $('#packSummary').addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-pc]');
+    if (!t) return;
+    try { const { card } = await api(`/api/card/${encodeURIComponent(packs.cards[+t.dataset.pc].id)}`); openCard({ card }); } catch { toast('Couldn’t load that card'); }
+  });
 
   /* ================= Card detail sheet ================= */
   let sheetCtx = null;

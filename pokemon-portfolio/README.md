@@ -46,6 +46,13 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   until you open it. Sort by newest/oldest set, name, rarity (rarest first), set name, or *my
   collection first*; filter by set, language, a name/number search, or *only cards I own* (owned
   cards are marked ✓). The catalogue is fetched once, saved in the database, and refreshed daily.
+- **Pack simulator** — pick any English booster set (Packs in the sidebar, or *Open packs* on the
+  Index), rip the pack and flip through it card by card: commons first, the rare last and face-down,
+  with a burst and holo shine for hits. Packs follow each era's real structure — WotC 11 cards
+  (7C/3U/1 rare, holo ~1 in 3), EX 9 cards (5C/2U/reverse/rare), DP–Sword & Shield 10 cards
+  (5C/3U/reverse/rare+), Scarlet & Violet 10 cards (4C/3U/2 holo slots incl. Illustration Rare
+  chances/rare+) — with approximate pull rates. The summary shows what the pack would be worth.
+  Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
 - **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
