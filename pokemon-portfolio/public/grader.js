@@ -287,23 +287,25 @@
         }
         const mean = (a, b) => { const c = [0, 0, 0]; for (let k = a; k < b; k++) for (let ch = 0; ch < 3; ch++) c[ch] += prof[k][ch]; return c.map((v) => v / (b - a)); };
         const step = (m) => dist3(mean(m - W5, m), mean(m, m + W5));
-        // Typical step size along the profile (most of it is flat print) = the noise level.
+        // Noise level: the quieter steps along the profile (the border itself and other flat print).
+        // Not the median — inside the card the artwork is busy, which would inflate it.
         const base = [];
         for (let m = 10; m < maxM; m += 2) base.push(step(m));
-        const noise = median(base);
+        const noise = quantile(base, 0.2);
         const thr = Math.max(12, noise * 4);
-        // A real edge is a step between two flat colours. Glare or a foil gradient is a steady
-        // slope: the colour keeps changing just before and after, so it's skipped.
-        const slope = (a, b) => dist3(mean(a, a + 5), mean(b, b + 5));
+        // A real edge ends a flat border. Glare or a foil gradient is a steady slope, so the
+        // colour is already changing in the border just before the "edge" — those are skipped.
+        // (What comes after the edge doesn't matter: often a thin frame line, then the artwork.)
         let found = null;
         for (let m = 10; m < maxM; m++) {
           if (step(m) < thr) continue;
           // Walk to the strongest point of this step.
           let k = m;
-          while (k + 1 < maxM && step(k + 1) >= step(k)) k++;
-          const pre = k >= 14 ? slope(k - 14, k - 9) : 0;
-          const post = slope(k + 4, k + 9);
-          if (step(k) >= 2 * Math.max(pre, post)) { found = k; break; }
+          // (at most 3 px — photo blur — so it can't climb into a frame line right behind the edge)
+          while (k + 1 < maxM && k < m + 3 && step(k + 1) >= step(k)) k++;
+          const a = Math.max(2, k - 13), mid = Math.max(a + 3, k - 8), end = Math.max(mid + 2, k - 3);
+          const pre = dist3(mean(a, mid), mean(mid, end));
+          if (step(k) >= 2 * pre) { found = k; break; }
           m = k;
         }
         if (found != null) vals.push(found);
@@ -983,7 +985,7 @@
 
   function analyseSide(photo, label, refImg) {
     const loc = locate(photo);
-    if (!loc) return { label, error: `Couldn’t find the card in the ${label} photo. Lay it on a plain, dark surface with some space around it.` };
+    if (!loc) return { label, error: `Couldn’t find the card in the ${label} photo. Lay it on a plain surface that contrasts with its edges (e.g. grey or wood), with some space around it.` };
     const px = pixels(loc.card);
     const ref = refImg ? prepareReference(refImg, loc.card, px) : null;
     // Centering: measured on the photo; the official image fills in a side the photo couldn't
@@ -997,6 +999,14 @@
       }
       border = merged;
     }
+    // Does the card stand out from the background? (A dark-blue back on a dark table doesn't, and
+    // then its edges — and so the centering — can be misplaced.)
+    const rim = [];
+    for (let i = 0; i < 30; i++) {
+      const f = 0.2 + 0.6 * i / 29, m = Math.round(1.5 * MM);
+      rim.push(P(px, m, Math.round(CH * f)), P(px, CW - 1 - m, Math.round(CH * f)), P(px, Math.round(CW * f), m), P(px, Math.round(CW * f), CH - 1 - m));
+    }
+    const lowContrast = !!loc.bg && dist3(medColor(rim), loc.bg) < 45;
     const ed = edges(px);
     const co = corners(px, loc.bg, loc.thr);
     // Creases: always checked on the back (logo bands excepted); on the front only when the
@@ -1017,7 +1027,7 @@
     const sp = spots(px, border);
     if (ref?.ok) sp.push(...surfaceMarks(px, ref).slice(0, 8));
     const gl = glare(px);
-    return { label, loc, border, centeringFrom, edges: ed, corners: co, crease: cr, cracks: ck, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff, centering: ref.centering || null } };
+    return { label, loc, border, centeringFrom, lowContrast, edges: ed, corners: co, crease: cr, cracks: ck, spots: sp, glare: gl, reference: ref && { ok: ref.ok, match: ref.match, artDiff: ref.artDiff, centering: ref.centering || null } };
   }
 
   // opts.reference: the official image of the card (an <img> or bitmap), for the front.
@@ -1032,6 +1042,7 @@
     for (const s of sides) {
 
       if (s.glare > 0.015) warnings.push(`Glare on the ${s.label} — tilt the card or light away from reflections.`);
+      if (s.lowContrast) warnings.push(`The ${s.label} of the card blends into the background, so its edges (and centering) may be measured inaccurately — photograph it on a plain surface that contrasts with its border, e.g. grey or wood for the dark-blue back.`);
       if (s.loc.pxPerMm < 6) warnings.push(`The ${s.label} photo is low resolution — get closer so the card fills more of the frame.`);
       if (Math.abs(s.loc.tilt) > 8) warnings.push(`The ${s.label} card was rotated ${Math.abs(s.loc.tilt).toFixed(0)}°; it was straightened, but a squarer photo is more accurate.`);
     }
