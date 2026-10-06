@@ -8,7 +8,7 @@ const { createStore } = require('./lib/store');
 const { createAuth, httpError } = require('./lib/auth');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
-const { createGroupsApi } = require('./lib/groups');
+const { createGroupsApi, sniffImage } = require('./lib/groups');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
 const CardDescriptor = require('./public/descriptor');
 
@@ -84,6 +84,7 @@ function rateLimit(name, max, windowMs) {
 }
 const limitAuth = rateLimit('sign-in', 20, 15 * 60e3);
 const limitApi = rateLimit('lookup', 240, 60e3);
+const limitAvatar = rateLimit('picture upload', 20, 15 * 60e3);
 
 // Reject cross-site writes (cookies are SameSite=Lax, this is belt-and-braces).
 function checkOrigin(req) {
@@ -155,6 +156,36 @@ async function api(req, res, url) {
     const updated = await store.updateUser(user.id, fields);
     leaderboard.invalidate();
     return send(res, 200, { user: auth.publicUser(updated) });
+  }
+
+  // --- profile picture ---
+  // PUT { image: base64 JPEG/PNG/WebP } sets it (the app sends a 256×256 square); { image: null } removes it.
+  if (pathname === '/api/account/avatar' && method === 'PUT') {
+    const user = await requireUser(req);
+    limitAvatar(req);
+    const { image } = await readBody(req);
+    let img = null;
+    if (image != null) {
+      if (typeof image !== 'string' || image.length > 1.4e6) throw httpError(400, 'That picture is too large (max 1 MB).');
+      const data = Buffer.from(image.replace(/^data:[^,]*,/, ''), 'base64');
+      const mime = sniffImage(data);
+      if (!mime || mime === 'image/gif') throw httpError(400, 'Use a JPEG, PNG or WebP picture.');
+      img = { mime, data };
+    }
+    const updated = await store.setAvatar(user.id, img);
+    leaderboard.invalidate();
+    return send(res, 200, { user: auth.publicUser(updated) });
+  }
+  const av = pathname.match(/^\/api\/avatar\/([A-Za-z0-9_-]{1,64})$/);
+  if (av && method === 'GET') {
+    const a = await store.getAvatar(av[1]);
+    if (!a) throw httpError(404, 'No picture.');
+    res.writeHead(200, {
+      'Content-Type': a.mime, 'Content-Length': a.data.length,
+      'Cache-Control': url.searchParams.has('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'",
+    });
+    return res.end(a.data);
   }
 
   // --- one card's details (used when opening a card from someone's profile) ---
@@ -337,6 +368,31 @@ function sendImage(res, hit, maxAge = 604800) {
   res.end(hit.body);
 }
 
+// Every script/stylesheet URL in index.html carries a version derived from the files themselves
+// (`app.js?v=…`), so after an update browsers always load the new code together with the new
+// page — never a cached old script with a new page. Versioned files can then be cached for good.
+let indexCache = null; // { key, html }
+function assetVersion() {
+  const h = require('crypto').createHash('sha1');
+  for (const f of fs.readdirSync(PUBLIC_DIR).sort()) {
+    if (!/\.(js|css)$/.test(f)) continue;
+    const st = fs.statSync(path.join(PUBLIC_DIR, f));
+    h.update(`${f}:${st.size}:${st.mtimeMs}|`);
+  }
+  return h.digest('hex').slice(0, 10);
+}
+function indexHtml() {
+  const st = fs.statSync(path.join(PUBLIC_DIR, 'index.html'));
+  const v = assetVersion();
+  const key = `${v}:${st.mtimeMs}:${st.size}`;
+  if (indexCache?.key !== key) {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
+      .replace(/(<(?:script|link)\b[^>]*\b(?:src|href)=")([\w.-]+\.(?:js|css))(")/g, `$1$2?v=${v}$3`);
+    indexCache = { key, html };
+  }
+  return indexCache.html;
+}
+
 function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel.endsWith('/')) rel += 'index.html';
@@ -345,12 +401,20 @@ function serveStatic(req, res, url) {
   fs.stat(file, (err, st) => {
     const target = !err && st.isFile() ? file : path.join(PUBLIC_DIR, 'index.html'); // SPA fallback
     const ext = path.extname(target);
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
+      // Versioned asset → cache forever; anything else → always check for a newer copy.
+      'Cache-Control': ext !== '.html' && url.searchParams.has('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'same-origin',
-    });
+    };
+    if (ext === '.html') {
+      let html;
+      try { html = indexHtml(); } catch { return send(res, 500, 'Server error'); }
+      res.writeHead(200, headers);
+      return res.end(req.method === 'HEAD' ? undefined : html);
+    }
+    res.writeHead(200, { ...headers, 'Last-Modified': st.mtime.toUTCString() });
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(target).pipe(res);
   });

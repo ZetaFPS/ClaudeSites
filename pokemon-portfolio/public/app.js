@@ -190,10 +190,12 @@
   function initials() {
     return user ? (user.name || user.email).trim().charAt(0).toUpperCase() : '';
   }
+  // A profile picture, or the name's initial when there isn't one.
+  const faceHtml = (name, url) => (url ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">` : esc(String(name || '?').trim().charAt(0).toUpperCase() || '?'));
   function renderAvatar() {
     const a = $('#accountBtn');
     a.classList.toggle('guest', !user);
-    a.innerHTML = user ? esc(initials()) : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
+    a.innerHTML = user ? faceHtml(user.name || user.email, user.avatar) : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>';
   }
   $('#accountBtn').addEventListener('click', openAccount);
 
@@ -201,7 +203,12 @@
     const t = totals();
     $('#sheetBody').innerHTML = user ? `
       <div class="acct">
-        <div class="avatar">${esc(initials())}</div>
+        <label class="avatar acct-face" for="avatarInput" title="Change profile picture">${faceHtml(user.name || user.email, user.avatar)}<span class="cam" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></span></label>
+        <input type="file" id="avatarInput" accept="image/*" hidden>
+        <div class="acct-photo-actions">
+          <label class="link-btn" for="avatarInput">${user.avatar ? 'Change photo' : 'Add a profile picture'}</label>
+          ${user.avatar ? '<button type="button" class="link-btn muted" id="avatarRemove">Remove</button>' : ''}
+        </div>
         <h3 id="sheetTitle">${esc(user.name)}</h3>
         <p>${esc(user.email)}</p>
         <div class="acct-grid">
@@ -247,8 +254,48 @@
         toast('Couldn’t save — try again');
       }
     });
+    $('#avatarInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      try {
+        const image = await squarePhoto(file, 256);
+        toast('Uploading…');
+        user = (await api('/api/account/avatar', { method: 'PUT', body: { image } })).user;
+        afterAvatarChange('Profile picture updated');
+      } catch (err) {
+        toast(err?.status ? err.message : 'Couldn’t use that picture — try a JPEG or PNG');
+      }
+    });
+    $('#avatarRemove')?.addEventListener('click', async () => {
+      try {
+        user = (await api('/api/account/avatar', { method: 'PUT', body: { image: null } })).user;
+        afterAvatarChange('Profile picture removed');
+      } catch {
+        toast('Couldn’t remove it — try again');
+      }
+    });
     $('#toSignup')?.addEventListener('click', () => { showAuth(); setAuthMode('signup'); });
     $('#toLogin')?.addEventListener('click', () => { showAuth(); setAuthMode('login'); });
+  }
+
+  function afterAvatarChange(msg) {
+    renderAvatar();
+    lbData = null; // leaderboard shows the new picture next time
+    openAccount();
+    toast(msg);
+  }
+  // Centre-crop a photo to a square and shrink it (JPEG data URL) — keeps uploads small.
+  async function squarePhoto(file, size) {
+    const bmp = await createImageBitmap(file);
+    const side = Math.min(bmp.width, bmp.height);
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const x = c.getContext('2d');
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+    bmp.close?.();
+    return c.toDataURL('image/jpeg', 0.86);
   }
 
   /* ================= Pricing ================= */
@@ -1427,7 +1474,7 @@
     const order = [top3[1], top3[0], top3[2]].filter(Boolean); // 2nd, 1st, 3rd
     return order.map((e) => `
       <button class="pod ${medal(e.rank)} ${user && e.id === user.id ? 'is-me' : ''}" ${attr}="${esc(e.id)}">
-        <span class="pod-avatar">${nameInitial(e.name)}<i>${e.rank}</i></span>
+        <span class="pod-avatar">${faceHtml(e.name, e.avatar)}<i>${e.rank}</i></span>
         <span class="pod-name">${esc(e.name)}</span>
         <span class="pod-value num">${money(e.value)}</span>
         <span class="pod-cards">${e.cards} card${e.cards === 1 ? '' : 's'}</span>
@@ -1438,7 +1485,7 @@
     return entries.map((e) => `
       <button class="lb-row glass ${user && e.id === user.id ? 'is-me' : ''}" ${attr}="${esc(e.id)}">
         <span class="lb-rank num">${e.rank}</span>
-        <span class="pod-avatar sm">${nameInitial(e.name)}</span>
+        <span class="pod-avatar sm">${faceHtml(e.name, e.avatar)}</span>
         <span class="lb-name">${esc(e.name)}${user && e.id === user.id ? ' <em>you</em>' : ''}<small>${e.cards} card${e.cards === 1 ? '' : 's'}</small></span>
         <span class="lb-thumbs">${e.top.slice(0, 3).map((t) => `<img ${imgAttrs({ id: t.id, images: { small: t.image } })} alt="" loading="lazy">`).join('')}</span>
         <span class="lb-value num">${money(e.value)}</span>
@@ -1451,7 +1498,7 @@
     $('#sheetBody').innerHTML = `
       <div class="profile">
         <div class="profile-head">
-          <span class="pod-avatar lg ${medal(e.rank)}">${nameInitial(e.name)}</span>
+          <span class="pod-avatar lg ${medal(e.rank)}">${faceHtml(e.name, e.avatar)}</span>
           <div>
             <h3 id="sheetTitle">${esc(e.name)}</h3>
             <p class="muted">Rank #${e.rank} · ${e.cards} card${e.cards === 1 ? '' : 's'}</p>
@@ -1764,7 +1811,7 @@
       if (m.body) content += `<div class="msg-text">${esc(m.body)}</div>`;
       const canDelete = mine || isOwner;
       html += `<div class="msg ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}" data-seq="${m.seq}">
-          ${mine ? '' : `<span class="msg-avatar">${grouped ? '' : nameInitial(m.name)}</span>`}
+          ${mine ? '' : `<span class="msg-avatar">${grouped ? '' : faceHtml(m.name, m.avatar)}</span>`}
           <div class="msg-col">
             ${!mine && !grouped ? `<div class="msg-name">${esc(m.name)}</div>` : ''}
             <div class="bubble ${m.kind}">${content}</div>
@@ -1900,7 +1947,7 @@
         <h4 class="profile-sub">${g.members.length} member${g.members.length === 1 ? '' : 's'}</h4>
         <div class="member-list">
           ${g.members.map((m) => `<div class="member-row">
-              <span class="pod-avatar sm">${nameInitial(m.name)}</span>
+              <span class="pod-avatar sm">${faceHtml(m.name, m.avatar)}</span>
               <span class="lb-name">${esc(m.name)}${m.me ? ' <em>you</em>' : ''}<small>${m.role === 'owner' ? 'Owner' : 'Member'} · joined ${esc(new Date(m.joinedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</small></span>
               ${owner && !m.me ? `<button class="btn ghost danger-text" data-kick="${esc(m.id)}" data-name="${esc(m.name)}">Remove</button>` : ''}
             </div>`).join('')}
@@ -2152,7 +2199,8 @@
       }
       renderGrade(r);
     } catch (e) {
-      out.innerHTML = '<div class="grade-empty glass"><h3>Something went wrong reading those photos</h3><p>Try a JPEG or PNG photo taken with your phone camera.</p></div>';
+      console.error(e);
+      out.innerHTML = `<div class="grade-empty glass"><h3>Something went wrong reading those photos</h3><p>Try a JPEG or PNG photo taken with your phone camera.</p><p class="muted"><small>Details: ${esc(e?.message || e)}</small></p></div>`;
     } finally {
       btn.disabled = !gradeFiles.front;
       btn.textContent = 'Grade my card';

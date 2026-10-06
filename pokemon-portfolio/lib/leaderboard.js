@@ -1,4 +1,5 @@
 'use strict';
+const { avatarUrl } = require('./auth');
 // Leaderboard of collection values.
 //
 // Values are recomputed on the server from its own market prices — never from the prices a
@@ -64,7 +65,7 @@ function createLeaderboard(store, prices) {
       }
       byCard.sort((a, b) => b.price - a.price);
       return {
-        id: r.userId, name: r.name, hidden: !r.showOnLeaderboard,
+        id: r.userId, name: r.name, avatar: avatarUrl(r.userId, r.avatarAt), hidden: !r.showOnLeaderboard,
         value: Math.round(value * 100) / 100, cards, top: byCard.slice(0, 5),
       };
     }).sort((a, b) => b.value - a.value);
@@ -118,7 +119,7 @@ function createLeaderboard(store, prices) {
     const lb = await get();
     const entries = members.map((m) => {
       const e = lb.all.get(m.userId);
-      return { id: m.userId, name: m.name, value: e?.value || 0, cards: e?.cards || 0, top: e?.top || [] };
+      return { id: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), value: e?.value || 0, cards: e?.cards || 0, top: e?.top || [] };
     }).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
     entries.forEach((e, i) => { e.rank = i + 1; });
     return { computedAt: lb.computedAt, total: entries.length, entries };

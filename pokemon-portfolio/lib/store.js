@@ -14,7 +14,7 @@ const path = require('path');
 function fileStore(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'db.json');
-  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, seq: 0 };
+  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, avatars: {}, seq: 0 };
   try {
     data = { ...data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   } catch (e) {
@@ -59,7 +59,20 @@ function fileStore(dir) {
     async listPortfolios() {
       return Object.entries(data.portfolios)
         .filter(([uid]) => data.users[uid])
-        .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
+        .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
+    },
+    // Profile picture: null image removes it. The user's avatarAt changes with every upload.
+    async setAvatar(userId, img) {
+      const u = data.users[userId];
+      if (!u) return null;
+      if (img) { data.avatars[userId] = { mime: img.mime, b64: img.data.toString('base64') }; u.avatarAt = Date.now(); }
+      else { delete data.avatars[userId]; delete u.avatarAt; }
+      save();
+      return u;
+    },
+    async getAvatar(userId) {
+      const a = data.avatars[userId];
+      return a ? { mime: a.mime, data: Buffer.from(a.b64, 'base64') } : null;
     },
 
     // --- groups ---
@@ -80,7 +93,7 @@ function fileStore(dir) {
     async getMember(groupId, userId) { return data.members[groupId]?.[userId] || null; },
     async listMembers(groupId) {
       return Object.entries(data.members[groupId] || {}).filter(([uid]) => data.users[uid])
-        .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
+        .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
     },
     async countUserGroups(userId) { return Object.values(data.members).filter((m) => m[userId]).length; },
     async listUserGroups(userId) {
@@ -112,7 +125,7 @@ function fileStore(dir) {
     async listMessages(groupId, { after = 0, before = null, limit = 50 } = {}) {
       let msgs = (data.messages[groupId] || []).filter((m) => m.seq > after && (before == null || m.seq < before));
       msgs = after ? msgs.slice(0, limit) : msgs.slice(-limit);
-      return msgs.map((m) => ({ ...m, name: data.users[m.userId]?.name || 'Former member' }));
+      return msgs.map((m) => ({ ...m, name: data.users[m.userId]?.name || 'Former member', avatarAt: data.users[m.userId]?.avatarAt || null }));
     },
     async getMessage(groupId, seq) { return (data.messages[groupId] || []).find((m) => m.seq === seq) || null; },
     async deleteMessage(groupId, seq) {
@@ -192,6 +205,12 @@ async function pgStore(url, legacyDir) {
     );
     CREATE INDEX IF NOT EXISTS sessions_expires ON sessions (expires);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS show_on_leaderboard BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_at BIGINT;
+    CREATE TABLE IF NOT EXISTS avatars (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      mime    TEXT NOT NULL,
+      data    BYTEA NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS portfolios (
       user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       doc        JSONB NOT NULL,
@@ -241,9 +260,9 @@ async function pgStore(url, legacyDir) {
   const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at };
   const toMessage = (r) => r && {
     seq: +r.seq, groupId: r.group_id, userId: r.user_id, kind: r.kind, body: r.body, imageId: r.image_id, card: r.card,
-    createdAt: +r.created_at, name: r.name || 'Former member',
+    createdAt: +r.created_at, name: r.name || 'Former member', avatarAt: r.avatar_at != null ? +r.avatar_at : null,
   };
-  const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false };
+  const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false, avatarAt: r.avatar_at != null ? +r.avatar_at : null };
   const store = {
     kind: 'postgres',
     async getUser(id) { return toUser((await q('SELECT * FROM users WHERE id = $1', [id])).rows[0]); },
@@ -277,8 +296,23 @@ async function pgStore(url, legacyDir) {
       return store.getUser(id);
     },
     async listPortfolios() {
-      const { rows } = await q(`SELECT u.id, u.name, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
-      return rows.map((r) => ({ userId: r.id, name: r.name, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
+      const { rows } = await q(`SELECT u.id, u.name, u.avatar_at, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
+      return rows.map((r) => ({ userId: r.id, name: r.name, avatarAt: r.avatar_at != null ? +r.avatar_at : null, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
+    },
+    async setAvatar(userId, img) {
+      if (img) {
+        await q(`INSERT INTO avatars (user_id, mime, data) VALUES ($1, $2, $3)
+                 ON CONFLICT (user_id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data`, [userId, img.mime, img.data]);
+        await q('UPDATE users SET avatar_at = $1 WHERE id = $2', [Date.now(), userId]);
+      } else {
+        await q('DELETE FROM avatars WHERE user_id = $1', [userId]);
+        await q('UPDATE users SET avatar_at = NULL WHERE id = $1', [userId]);
+      }
+      return store.getUser(userId);
+    },
+    async getAvatar(userId) {
+      const r = (await q('SELECT mime, data FROM avatars WHERE user_id = $1', [userId])).rows[0];
+      return r ? { mime: r.mime, data: r.data } : null;
     },
 
     // --- groups ---
@@ -304,9 +338,9 @@ async function pgStore(url, legacyDir) {
       return r ? { role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read } : null;
     },
     async listMembers(groupId) {
-      const { rows } = await q(`SELECT m.user_id, u.name, m.role, m.joined_at, m.last_read FROM group_members m JOIN users u ON u.id = m.user_id
+      const { rows } = await q(`SELECT m.user_id, u.name, u.avatar_at, m.role, m.joined_at, m.last_read FROM group_members m JOIN users u ON u.id = m.user_id
                                 WHERE m.group_id = $1 ORDER BY m.joined_at`, [groupId]);
-      return rows.map((r) => ({ userId: r.user_id, name: r.name, role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read }));
+      return rows.map((r) => ({ userId: r.user_id, name: r.name, avatarAt: r.avatar_at != null ? +r.avatar_at : null, role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read }));
     },
     async countUserGroups(userId) { return (await q('SELECT COUNT(*)::int AS n FROM group_members WHERE user_id = $1', [userId])).rows[0].n; },
     async listUserGroups(userId) {
@@ -338,7 +372,7 @@ async function pgStore(url, legacyDir) {
       if (before != null) { vals.push(before); where += ` AND gm.seq < $${vals.length}`; }
       vals.push(limit);
       const order = after ? 'ASC' : 'DESC';
-      const { rows } = await q(`SELECT gm.*, u.name FROM group_messages gm LEFT JOIN users u ON u.id = gm.user_id
+      const { rows } = await q(`SELECT gm.*, u.name, u.avatar_at FROM group_messages gm LEFT JOIN users u ON u.id = gm.user_id
                                 WHERE ${where} ORDER BY gm.seq ${order} LIMIT $${vals.length}`, vals);
       const msgs = rows.map(toMessage);
       return after ? msgs : msgs.reverse();

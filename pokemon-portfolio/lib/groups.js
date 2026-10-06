@@ -31,6 +31,8 @@ function sniffImage(buf) {
   return null;
 }
 
+const { avatarUrl } = require('./auth');
+
 function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit }) {
   const limitWrite = rateLimit('message', 40, 60e3);
 
@@ -49,7 +51,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
   }
 
   const publicMessage = (m) => ({
-    seq: m.seq, kind: m.kind, userId: m.userId, name: m.name, createdAt: m.createdAt,
+    seq: m.seq, kind: m.kind, userId: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), createdAt: m.createdAt,
     body: m.body || '', card: m.card || null,
     image: m.imageId ? `/api/groups/${m.groupId}/images/${m.imageId}` : null,
   });
@@ -59,7 +61,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     return {
       id: group.id, name: group.name, createdAt: group.createdAt, inviteCode: group.inviteCode,
       ownerId: group.ownerId, myRole: member.role,
-      members: members.map((m) => ({ id: m.userId, name: m.name, role: m.role, joinedAt: m.joinedAt, me: m.userId === user.id })),
+      members: members.map((m) => ({ id: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), role: m.role, joinedAt: m.joinedAt, me: m.userId === user.id })),
     };
   }
 
@@ -230,7 +232,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       }
       const saved = await store.addMessage(msg);
       await store.setLastRead(gid, user.id, saved.seq);
-      send(res, 201, { message: publicMessage({ ...saved, name: user.name }) });
+      send(res, 201, { message: publicMessage({ ...saved, name: user.name, avatarAt: user.avatarAt }) });
       return true;
     }
 
@@ -264,4 +266,4 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
   };
 }
 
-module.exports = { createGroupsApi };
+module.exports = { createGroupsApi, sniffImage };

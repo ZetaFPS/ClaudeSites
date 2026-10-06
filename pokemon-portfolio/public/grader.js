@@ -739,9 +739,13 @@
   // The official picture of the card is lined up with the straightened photo (small shifts and
   // zooms are searched), its colours are matched to the photo's lighting, and then anything that
   // is part of the printed design can be told apart from damage.
+  // One small canvas reused for every trial alignment (Safari limits total canvas memory).
+  let lowCanvas = null;
   function lowLum(src, w, h, tf) {
-    const c = canvas(w, h);
+    if (!lowCanvas || lowCanvas.width !== w || lowCanvas.height !== h) lowCanvas = canvas(w, h);
+    const c = lowCanvas;
     const x = ctx2d(c);
+    x.setTransform(1, 0, 0, 1, 0, 0);
     x.fillStyle = '#000'; x.fillRect(0, 0, w, h);
     x.imageSmoothingQuality = 'high';
     if (tf) x.setTransform(tf.s, 0, 0, tf.s, (w / 2) * (1 - tf.s) + tf.dx, (h / 2) * (1 - tf.s) + tf.dy);

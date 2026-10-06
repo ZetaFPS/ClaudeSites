@@ -26,7 +26,7 @@ function createAuth(store) {
   const dummy = hashPassword(crypto.randomBytes(8).toString('hex'));
 
   function publicUser(u) {
-    return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt, showOnLeaderboard: u.showOnLeaderboard !== false };
+    return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt, showOnLeaderboard: u.showOnLeaderboard !== false, avatar: avatarUrl(u.id, u.avatarAt) };
   }
 
   async function createSession(userId) {
@@ -80,10 +80,13 @@ function createAuth(store) {
   return { publicUser, createSession, userForToken, destroySession, signup, login };
 }
 
+// Profile picture URL; the version changes with every upload so browsers can cache it forever.
+const avatarUrl = (id, at) => (at ? `/api/avatar/${encodeURIComponent(id)}?v=${at}` : null);
+
 function httpError(status, message) {
   const e = new Error(message);
   e.status = status;
   return e;
 }
 
-module.exports = { createAuth, httpError };
+module.exports = { createAuth, httpError, avatarUrl };

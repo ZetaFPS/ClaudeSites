@@ -38,6 +38,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   that exact name, number and printing is accepted. Grades with no recent sales (PSA 10/9/8/7) are
   **estimated** — scaled from the card's real graded sales when it has some, otherwise from its raw
   price using typical PSA premiums — and always shown as "≈ … est." with a striped bar.
+- **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
+  and shrunk on your device before upload, stored in the database, and shown in the top bar, on the
+  leaderboard and profiles, and in group chats and member lists.
 - **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
   to see their 5 most valuable cards. Values are recalculated on the server from current market
   prices (saved prices can't be faked), and only display names, totals and top cards are public —
@@ -159,6 +162,9 @@ lib/visualIndex.js  picture fingerprints of every card (English + Japanese) and 
 public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, descriptor.js = shared
                  card fingerprint (browser + server), grader.js = pre-grading
 ```
+
+Script and stylesheet URLs in the page carry a version (`app.js?v=…`) computed from the files, so
+after every deploy browsers load the new code immediately — never an old cached script with a new page.
 
 Prices are cached on the server (card data 6 h, prices 12 h) and the app refreshes your
 portfolio's prices automatically when they're more than 6 hours old, or on demand with the refresh button.

@@ -950,3 +950,15 @@ main > .storage-warn { margin: 0 16px 16px; }
 .gp-selected .meta b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gp-selected .meta small { color: var(--text-3); font-size: 12px; }
 .gp-selected .ok { color: var(--green, #34f5a6); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+
+/* ---------- Profile pictures ---------- */
+.avatar, .pod-avatar, .msg-avatar { overflow: visible; }
+.avatar > img, .pod-avatar > img, .msg-avatar > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; grid-area: 1 / 1; }
+.acct-face { position: relative; cursor: pointer; }
+.acct-face .cam {
+  position: absolute; right: -2px; bottom: -2px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--grad); color: #05060b; box-shadow: 0 4px 14px rgba(0, 0, 0, .4);
+}
+.acct-photo-actions { display: flex; justify-content: center; gap: 14px; margin: -4px 0 10px; font-size: 13px; }
+.acct-photo-actions .link-btn { cursor: pointer; margin: 0; color: var(--cyan); }
+.acct-photo-actions .muted { color: var(--text-3); }
