@@ -57,7 +57,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   - *Edges*: whitening/chipping along each edge
   - *Corners*: wear and dings (compared with the card's die-cut corner shape)
   - *Surface*: creases (long, straight, continuous thin lines on the back — curved or broken design
-    lines are rejected; 18–30 mm lines are only flagged to check), spots/stains in the borders, glare
+    lines are rejected, and so are outlines of printed shapes such as the POKéMON logo, which have
+    different colours on each side while a crease cuts through the design; 18–30 mm lines are only
+    flagged to check), spots/stains in the borders, glare
   Holo foil, glossy finishes and glare are told apart from wear: whitening must be a sharp
   step confined to the outer ~1 mm (reflections fade in gradually), everything is compared with
   the border colour at that spot, single-pixel foil glints are ignored, and only marks darker than

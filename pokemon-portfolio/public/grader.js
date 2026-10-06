@@ -507,11 +507,18 @@
       }
     }
     cands.sort((a, b) => b.density - a.density);
+    // One printed shape produces many near-identical candidate lines; keep the strongest of each
+    // group so they can't crowd a real crease out of the shortlist.
+    const shortlist = [];
+    for (const c of cands) {
+      if (shortlist.length >= 40) break;
+      if (!shortlist.some((o) => Math.abs(o.deg - c.deg) <= 4 && Math.abs(o.rho - c.rho) <= 8)) shortlist.push(c);
+    }
     // A crease is one continuous line; text and patterns line up only in short pieces.
     // Walk each candidate line and measure its longest run (allowing 3 px gaps).
     let best = null;
     const pairAngles = [0, 90, 45, 135];
-    for (const c of cands.slice(0, 40)) {
+    for (const c of shortlist) {
       const seg = lineEndpoints(cos[c.k], sin[c.k], c.rho, inset, w - inset, inset, h - inset);
       if (!seg) continue;
       // The cross-line profile must run along the line's normal (angle c.deg).
@@ -545,9 +552,17 @@
         const sagitta = pts.length > 8 ? Math.abs(quadCoef(pts)) : 0; // px, over half the run
         if (sagitta > 0.9) runMm = 0;
       }
+      // Same colours on both sides: a crease cuts *through* the printed design, so just beside it
+      // the card looks the same on either side. The outline of a printed shape (e.g. the bottom
+      // edge of the POKéMON logo on the back) has one colour above and another below, all along.
+      let sides = 0;
+      if (runMm >= 18) {
+        sides = sideContrast(px, seg, n, bestFrom, bestTo, nx, ny);
+        if (sides > SIDE_LIMIT) runMm = 0;
+      }
       if (!best || runMm > best.runMm) {
         const at = (i) => [seg[0] + (seg[2] - seg[0]) * i / n, seg[1] + (seg[3] - seg[1]) * i / n];
-        best = { ...c, runMm, line: [...at(bestFrom), ...at(bestTo)] };
+        best = { ...c, runMm, sides, line: [...at(bestFrom), ...at(bestTo)] };
       }
     }
     if (!best || best.runMm < 18) return { found: false, strength: best ? best.runMm : 0 };
@@ -558,9 +573,31 @@
       faint: best.runMm < 30,
       strength: best.density,
       lengthMm: best.runMm,
+      sides: best.sides,
       line: best.line.map((v) => v * 2), // back to 10 px/mm coordinates
     };
   }
+  // How different the card is on the two sides of a line (0 = same colours). Compares the average
+  // colour 1.2 mm and 2 mm to either side, along the whole run (half-resolution line coordinates).
+  const SIDE_LIMIT = 45;
+  function sideContrast(px, seg, n, from, to, nx, ny) {
+    let worst = 0;
+    for (const k of [1.2 * MM, 2 * MM]) {
+      let dr = 0, dg = 0, db = 0, cnt = 0;
+      for (let i = from; i <= to; i += 2) {
+        const fx = (seg[0] + (seg[2] - seg[0]) * i / n) * 2, fy = (seg[1] + (seg[3] - seg[1]) * i / n) * 2;
+        const ax = Math.round(fx + nx * k), ay = Math.round(fy + ny * k), bx = Math.round(fx - nx * k), by = Math.round(fy - ny * k);
+        if (Math.min(ax, bx) < 1 || Math.min(ay, by) < 1 || Math.max(ax, bx) > CW - 2 || Math.max(ay, by) > CH - 2) continue;
+        for (const [ox, oy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const a = P(px, ax + ox, ay + oy), b = P(px, bx + ox, by + oy);
+          dr += a[0] - b[0]; dg += a[1] - b[1]; db += a[2] - b[2]; cnt++;
+        }
+      }
+      if (cnt) worst = Math.max(worst, Math.hypot(dr / cnt, dg / cnt, db / cnt));
+    }
+    return worst;
+  }
+
   // Least-squares fit y = a + b·x + c·x² (x in [-1, 1]); returns c.
   function quadCoef(pts) {
     let S0 = 0, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
