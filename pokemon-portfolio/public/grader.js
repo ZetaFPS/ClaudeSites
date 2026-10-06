@@ -120,14 +120,16 @@
     return c;
   }
 
-  // Sub-pixel-ish outer edges at full resolution: scan many lines across each coarse edge.
-  function refineEdges(src, box, bg, thr) {
+  // Outer edges at full resolution. Each side is sampled along ~70 scan lines and a straight
+  // line is fitted through the hits (ignoring outliers), so a photo taken at a slight angle —
+  // where the card looks like a trapezoid, not a rectangle — is measured correctly.
+  function edgeLines(src, box, bg, thr) {
     const W = src.width, H = src.height;
     const px = ctx2d(src).getImageData(0, 0, W, H).data;
     const at = (x, y) => { const i = (y * W + x) * 4; return [px[i], px[i + 1], px[i + 2]]; };
     const isCard = (x, y) => x >= 0 && y >= 0 && x < W && y < H && dist3(at(x, y), bg) > thr;
     const bw = box.x1 - box.x0, bh = box.y1 - box.y0;
-    const mx = Math.max(6, Math.round(bw * 0.04)), my = Math.max(6, Math.round(bh * 0.04));
+    const mx = Math.max(8, Math.round(bw * 0.07)), my = Math.max(8, Math.round(bh * 0.07));
     const scan = (from, to, step, fixed, horizontal) => {
       for (let v = from; step > 0 ? v <= to : v >= to; v += step) {
         const ok = horizontal ? isCard(v, fixed) && isCard(v + step, fixed) && isCard(v + 2 * step, fixed)
@@ -137,16 +139,89 @@
       return null;
     };
     const L = [], R = [], T = [], B = [];
-    for (let i = 0; i < 60; i++) {
-      const y = Math.round(box.y0 + bh * (0.2 + 0.6 * i / 59));
-      const x = Math.round(box.x0 + bw * (0.2 + 0.6 * i / 59));
-      const l = scan(Math.round(box.x0 - mx), Math.round(box.x0 + mx), 1, y, true); if (l != null) L.push(l);
-      const r = scan(Math.round(box.x1 + mx), Math.round(box.x1 - mx), -1, y, true); if (r != null) R.push(r + 1);
-      const t = scan(Math.round(box.y0 - my), Math.round(box.y0 + my), 1, x, false); if (t != null) T.push(t);
-      const b = scan(Math.round(box.y1 + my), Math.round(box.y1 - my), -1, x, false); if (b != null) B.push(b + 1);
+    for (let i = 0; i < 70; i++) {
+      const y = Math.round(box.y0 + bh * (0.12 + 0.76 * i / 69));
+      const x = Math.round(box.x0 + bw * (0.12 + 0.76 * i / 69));
+      const l = scan(Math.round(box.x0 - mx), Math.round(box.x0 + mx), 1, y, true); if (l != null) L.push([y, l]);
+      const r = scan(Math.round(box.x1 + mx), Math.round(box.x1 - mx), -1, y, true); if (r != null) R.push([y, r + 1]);
+      const t = scan(Math.round(box.y0 - my), Math.round(box.y0 + my), 1, x, false); if (t != null) T.push([x, t]);
+      const b = scan(Math.round(box.y1 + my), Math.round(box.y1 - my), -1, x, false); if (b != null) B.push([x, b + 1]);
     }
-    const pick = (arr, fallback) => (arr.length >= 15 ? median(arr) : fallback);
-    return { x0: pick(L, box.x0), x1: pick(R, box.x1), y0: pick(T, box.y0), y1: pick(B, box.y1) };
+    // Robust straight-line fit v = a·t + b: least squares, drop outliers, refit.
+    const fit = (pts, fallback) => {
+      if (pts.length < 15) return { a: 0, b: fallback };
+      let use = pts;
+      let a = 0, b = fallback;
+      for (let pass = 0; pass < 3; pass++) {
+        const n = use.length, mt = use.reduce((s, q) => s + q[0], 0) / n, mv = use.reduce((s, q) => s + q[1], 0) / n;
+        let num = 0, den = 0;
+        for (const [t, v] of use) { num += (t - mt) * (v - mv); den += (t - mt) ** 2; }
+        a = den ? num / den : 0; b = mv - a * mt;
+        const res = pts.map(([t, v]) => Math.abs(v - (a * t + b)));
+        const lim = Math.max(1.5, 2.5 * median(res));
+        const next = pts.filter((q, k) => res[k] <= lim);
+        if (next.length < 10 || next.length === use.length) break;
+        use = next;
+      }
+      return { a, b };
+    };
+    return { left: fit(L, box.x0), right: fit(R, box.x1), top: fit(T, box.y0), bottom: fit(B, box.y1) };
+  }
+
+  // Corner where a vertical-ish line x = a·y + b meets a horizontal-ish line y = c·x + d.
+  function cross(v, h) {
+    const x = (v.a * h.b + v.b) / (1 - v.a * h.a);
+    return [x, h.a * x + h.b];
+  }
+
+  // Projective transform taking the destination rectangle onto the photographed quadrilateral.
+  function homography(dst, src) {
+    const A = [], bv = [];
+    for (let k = 0; k < 4; k++) {
+      const [x, y] = dst[k], [u, v] = src[k];
+      A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); bv.push(u);
+      A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); bv.push(v);
+    }
+    // Gaussian elimination with partial pivoting.
+    for (let c = 0; c < 8; c++) {
+      let piv = c;
+      for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      [A[c], A[piv]] = [A[piv], A[c]]; [bv[c], bv[piv]] = [bv[piv], bv[c]];
+      for (let r = 0; r < 8; r++) {
+        if (r === c) continue;
+        const f = A[r][c] / A[c][c];
+        for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+        bv[r] -= f * bv[c];
+      }
+    }
+    const h = bv.map((v, k) => v / A[k][k]);
+    return (x, y) => { const w = h[6] * x + h[7] * y + 1; return [(h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w]; };
+  }
+
+  // Resample the photographed card onto the flat 10 px/mm canvas (bilinear).
+  function warp(src, quad) {
+    const W = src.width, H = src.height;
+    const sp = ctx2d(src).getImageData(0, 0, W, H).data;
+    const card = canvas(CW, CH);
+    const ctx = ctx2d(card);
+    const out = ctx.createImageData(CW, CH);
+    const d = out.data;
+    const map = homography([[0, 0], [CW, 0], [0, CH], [CW, CH]], quad);
+    for (let y = 0; y < CH; y++) {
+      for (let x = 0; x < CW; x++) {
+        const [u, v] = map(x + 0.5, y + 0.5);
+        const x0 = Math.floor(u - 0.5), y0 = Math.floor(v - 0.5);
+        const fx = u - 0.5 - x0, fy = v - 0.5 - y0;
+        const o = (y * CW + x) * 4;
+        for (let ch = 0; ch < 3; ch++) {
+          const g = (xx, yy) => sp[((clamp(yy, 0, H - 1) * W) + clamp(xx, 0, W - 1)) * 4 + ch];
+          d[o + ch] = (g(x0, y0) * (1 - fx) + g(x0 + 1, y0) * fx) * (1 - fy) + (g(x0, y0 + 1) * (1 - fx) + g(x0 + 1, y0 + 1) * fx) * fy;
+        }
+        d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    return card;
   }
 
   function locate(photo) {
@@ -157,16 +232,25 @@
       src = rotate(photo, -c1.tilt, c1.bg);
       c2 = coarse(src) || c1;
     }
-    const e = refineEdges(src, c2.box, c2.bg, c2.thr);
-    const w = e.x1 - e.x0, h = e.y1 - e.y0;
+    const e = edgeLines(src, c2.box, c2.bg, c2.thr);
+    const tl = cross(e.left, e.top), tr = cross(e.right, e.top), bl = cross(e.left, e.bottom), br = cross(e.right, e.bottom);
+    const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    const wTop = d(tl, tr), wBot = d(bl, br), hL = d(tl, bl), hR = d(tr, br);
+    const w = (wTop + wBot) / 2, h = (hL + hR) / 2;
+    // Keystone: how much the photo was taken at an angle (0 = straight down).
+    const keystone = Math.max(Math.abs(wTop - wBot) / w, Math.abs(hL - hR) / h);
+    const sane = [tl, tr, bl, br].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) && w > 50 && h > 50 && keystone < 0.25;
+    let card;
+    if (sane) card = warp(src, [tl, tr, bl, br]);
+    else { // fall back to the bounding box
+      card = canvas(CW, CH);
+      const x = ctx2d(card); x.imageSmoothingQuality = 'high';
+      x.drawImage(src, c2.box.x0, c2.box.y0, c2.box.x1 - c2.box.x0, c2.box.y1 - c2.box.y0, 0, 0, CW, CH);
+    }
     const aspect = w / h;
-    const card = canvas(CW, CH);
-    const x = ctx2d(card);
-    x.imageSmoothingQuality = 'high';
-    x.drawImage(src, e.x0, e.y0, w, h, 0, 0, CW, CH);
     return {
-      card, tilt: c1.tilt, bg: c2.bg, thr: c2.thr,
-      pxPerMm: h / 88, aspect, aspectOk: Math.abs(aspect - 63 / 88) < 0.05,
+      card, tilt: c1.tilt, bg: c2.bg, thr: c2.thr, keystone,
+      pxPerMm: h / 88, aspect, aspectOk: Math.abs(aspect - 63 / 88) < 0.06,
     };
   }
 
@@ -255,7 +339,7 @@
   // Returns { worn, shine } for this position.
   function edgeProfile(px, name, t, ref) {
     let e0 = 0, n0 = 0, hits = 0;
-    for (let m = 2; m <= 7; m++) { // 0.2–0.7 mm: where chipping shows
+    for (let m = 3; m <= 8; m++) { // 0.3–0.8 mm: where chipping shows (the outer sliver can be the card's side edge)
       const p = P(px, ...at(name, m, t));
       e0 += excess(p, ref); n0++;
       if (brighterPaler(p, ref)) hits++;
@@ -332,7 +416,7 @@
           // Depth into the card from the nearest edge (or the arc) and the inward direction.
           let depth, ux, uy;
           if (inArc) { depth = dArc; const h = Math.hypot(R - i, R - j) || 1; ux = (R - i) / h; uy = (R - j) / h; } else if (i < j) { depth = i; ux = 1; uy = 0; } else { depth = j; ux = 0; uy = 1; }
-          if (depth < 1.5 || depth > 12) continue;
+          if (depth < 3 || depth > 13) continue; // skip the outer 0.3 mm (card side edge / anti-aliasing)
           cand++;
           if (!brighterPaler(p, ref)) continue;
           // Same sharp-step test as the edges: 1 mm further in should be back to normal.
@@ -434,28 +518,64 @@
       let want = 0;
       for (let q = 0; q < 4; q++) { const dA = Math.abs(((c.deg - pairAngles[q]) % 180 + 180) % 180); if (Math.min(dA, 180 - dA) <= 23) want |= 1 << q; }
       const n = Math.ceil(Math.hypot(seg[2] - seg[0], seg[3] - seg[1]));
-      let run = 0, gap = 0, longest = 0, start = 0, bestFrom = 0, bestTo = 0;
+      // Coverage = share of the run actually on the line. A real crease is one continuous line
+      // (~90%); a chain of different design lines crossing a straight path is mostly gaps.
+      let run = 0, gap = 0, longest = 0, start = 0, bestFrom = 0, bestTo = 0, onCount = 0, bestCov = 0;
+      // Perpendicular offset (px) of the ridge at each step — used to check the line is straight.
+      const nx = cos[c.k], ny = sin[c.k];
+      const offs = new Array(n + 1).fill(null);
       for (let i = 0; i <= n; i++) {
-        const x = Math.round(seg[0] + (seg[2] - seg[0]) * i / n), y = Math.round(seg[1] + (seg[3] - seg[1]) * i / n);
+        const fx = seg[0] + (seg[2] - seg[0]) * i / n, fy = seg[1] + (seg[3] - seg[1]) * i / n;
+        const x = Math.round(fx), y = Math.round(fy);
         let on = false;
         for (let oy = -1; oy <= 1 && !on; oy++) for (let ox = -1; ox <= 1 && !on; ox++) on = !!(ridge[(y + oy) * w + x + ox] & want);
-        if (on) { if (!run) start = i; run = i - start + 1; gap = 0; } else if (run && ++gap > 10) { run = 0; gap = 0; }
-        if (run > longest) { longest = run; bestFrom = start; bestTo = i; }
+        for (let o = 0; o <= 2 && offs[i] == null; o++) for (const sg of o ? [-1, 1] : [1]) {
+          const qx = Math.round(fx + nx * o * sg), qy = Math.round(fy + ny * o * sg);
+          if (offs[i] == null && qx >= 0 && qy >= 0 && qx < w && qy < h && (ridge[qy * w + qx] & want)) offs[i] = o * sg;
+        }
+        if (on) { if (!run) { start = i; onCount = 0; } onCount++; run = i - start + 1; gap = 0; } else if (run && ++gap > 10) { run = 0; gap = 0; }
+        if (run > longest && onCount / run >= 0.6) { longest = run; bestFrom = start; bestTo = i; bestCov = onCount / run; }
       }
-      const runMm = (longest * 2) / MM;
+      let runMm = (longest * 2) / MM;
+      // Straightness: fit offset = a + b·t + c·t² over the run. A gentle arc in the card's design
+      // bends measurably (its sagitta); a crease doesn't.
+      if (longest > 10) {
+        const pts = [];
+        for (let i = bestFrom; i <= bestTo; i++) if (offs[i] != null) pts.push([(i - bestFrom) / (bestTo - bestFrom) * 2 - 1, offs[i]]);
+        const sagitta = pts.length > 8 ? Math.abs(quadCoef(pts)) : 0; // px, over half the run
+        if (sagitta > 0.9) runMm = 0;
+      }
       if (!best || runMm > best.runMm) {
         const at = (i) => [seg[0] + (seg[2] - seg[0]) * i / n, seg[1] + (seg[3] - seg[1]) * i / n];
         best = { ...c, runMm, line: [...at(bestFrom), ...at(bestTo)] };
       }
     }
-    if (!best || best.runMm < 15) return { found: false, strength: best ? best.runMm : 0 };
+    if (!best || best.runMm < 18) return { found: false, strength: best ? best.runMm : 0 };
+    // Short straight lines (18–30 mm) can be part of the card's printed design; report them as
+    // "check this" without affecting the grade. Long ones are treated as creases.
     return {
-      found: true,
+      found: best.runMm >= 30,
+      faint: best.runMm < 30,
       strength: best.density,
       lengthMm: best.runMm,
       line: best.line.map((v) => v * 2), // back to 10 px/mm coordinates
     };
   }
+  // Least-squares fit y = a + b·x + c·x² (x in [-1, 1]); returns c.
+  function quadCoef(pts) {
+    let S0 = 0, S1 = 0, S2 = 0, S3 = 0, S4 = 0, T0 = 0, T1 = 0, T2 = 0;
+    for (const [x, y] of pts) { const x2 = x * x; S0++; S1 += x; S2 += x2; S3 += x2 * x; S4 += x2 * x2; T0 += y; T1 += x * y; T2 += x2 * y; }
+    const M = [[S0, S1, S2, T0], [S1, S2, S3, T1], [S2, S3, S4, T2]];
+    for (let c = 0; c < 3; c++) {
+      let piv = c;
+      for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+      [M[c], M[piv]] = [M[piv], M[c]];
+      if (Math.abs(M[c][c]) < 1e-9) return 0;
+      for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 4; k++) M[r][k] -= f * M[c][k]; }
+    }
+    return M[2][3] / M[2][2];
+  }
+
   // Length of the line x·cos + y·sin = rho inside a rectangle.
   function chord(c, s, rho, x0, x1, y0, y1) {
     const e = lineEndpoints(c, s, rho, x0, x1, y0, y1);
@@ -568,11 +688,15 @@
 
     const warnings = [];
     for (const s of sides) {
-      if (!s.loc.aspectOk) warnings.push(`The ${s.label} photo looks angled (card proportions are off) — shoot straight down for accurate centering.`);
+
       if (s.glare > 0.015) warnings.push(`Glare on the ${s.label} — tilt the card or light away from reflections.`);
       if (s.loc.pxPerMm < 6) warnings.push(`The ${s.label} photo is low resolution — get closer so the card fills more of the frame.`);
       if (Math.abs(s.loc.tilt) > 8) warnings.push(`The ${s.label} card was rotated ${Math.abs(s.loc.tilt).toFixed(0)}°; it was straightened, but a squarer photo is more accurate.`);
     }
+
+    // One note for angled photos (they're straightened, so this only slightly lowers confidence).
+    const angled = sides.filter((s) => !s.loc.aspectOk || s.loc.keystone > 0.08).map((s) => s.label);
+    if (angled.length) warnings.push(`The ${angled.join(' and ')} photo${angled.length > 1 ? 's were' : ' was'} taken at an angle — straightened automatically, but shooting straight down gives the most accurate centering.`);
 
     // Centering
     const cen = {};
@@ -620,7 +744,8 @@
         else if (c.whitening >= 0.08) findings.push({ level: c.whitening >= 0.22 ? 'bad' : 'warn', text: `Whitening on the ${nice} corner (${s.label})` });
       }
     }
-    if (crease) findings.push({ level: 'bad', text: `Possible crease on the back, about ${crease.lengthMm.toFixed(0)} mm long` });
+    if (crease) findings.push({ level: 'bad', text: `Likely crease on the back, about ${crease.lengthMm.toFixed(0)} mm long` });
+    else if (back?.crease?.faint) findings.push({ level: 'info', text: `A faint straight line (~${back.crease.lengthMm.toFixed(0)} mm) on the back could be a light crease or part of the printed design — tilt the card under a light to check. Not counted against the grade.` });
     for (const p of allSpots.slice(0, 6)) findings.push({ level: p.areaMm2 > 2 ? 'bad' : 'warn', text: `Spot or stain on the ${p.side} border (~${p.areaMm2.toFixed(1)} mm²)` });
     const lit = sides.filter((s) => SIDES.some((n) => s.edges[n].shine > 0.04 || s.edges[n].uneven > 35) || Object.values(s.corners).some((c) => c.shine > 0.08) || s.glare > 0.004);
     if (lit.length) findings.push({ level: 'info', text: `Reflections / holo shine detected on the ${lit.map((s) => s.label).join(' and ')} — recognised as light, not wear, and not counted against the grade` });

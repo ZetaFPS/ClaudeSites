@@ -39,12 +39,16 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   members page. The owner can rename the group, reset the invite code, remove members or delete
   it; members can delete their own messages and leave. Only members can read a group or load its
   photos. Messages and photos are stored in the database, so they survive site updates too.
-- **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades:
+- **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades.
+  Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as
+  straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots
+  don't produce fake corner dings or off-centering:
   - *Centering*: border widths measured in mm on every side → ratios like `55/45` (L/R and T/B),
     front and back, checked against PSA's centering standards
   - *Edges*: whitening/chipping along each edge
   - *Corners*: wear and dings (compared with the card's die-cut corner shape)
-  - *Surface*: creases (long, straight, thin lines on the back), spots/stains in the borders, glare
+  - *Surface*: creases (long, straight, continuous thin lines on the back — curved or broken design
+    lines are rejected; 18–30 mm lines are only flagged to check), spots/stains in the borders, glare
   Holo foil, glossy finishes and glare are told apart from wear: whitening must be a sharp
   step confined to the outer ~1 mm (reflections fade in gradually), everything is compared with
   the border colour at that spot, single-pixel foil glints are ignored, and only marks darker than
