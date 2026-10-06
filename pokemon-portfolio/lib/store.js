@@ -162,6 +162,16 @@ function fileStore(dir) {
       await fs.promises.appendFile(path.join(dir, 'card-index.jsonl'), `${lines}\n`);
     },
 
+    // --- small key/value documents (e.g. the card catalogue), each in its own file ---
+    async getKv(key) {
+      try { return JSON.parse(await fs.promises.readFile(path.join(dir, `kv-${key.replace(/[^a-z0-9_-]/gi, '_')}.json`), 'utf8')); } catch { return null; }
+    },
+    async setKv(key, value) {
+      const f = path.join(dir, `kv-${key.replace(/[^a-z0-9_-]/gi, '_')}.json`);
+      await fs.promises.writeFile(`${f}.tmp`, JSON.stringify(value));
+      await fs.promises.rename(`${f}.tmp`, f);
+    },
+
     async close() { flushNow(); },
   };
 }
@@ -250,6 +260,11 @@ async function pgStore(url, legacyDir) {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS group_messages_group_seq ON group_messages (group_id, seq);
+    CREATE TABLE IF NOT EXISTS kv (
+      key        TEXT PRIMARY KEY,
+      value      JSONB NOT NULL,
+      updated_at BIGINT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS card_fps (
       id         TEXT PRIMARY KEY,
       meta       JSONB NOT NULL,
@@ -408,6 +423,12 @@ async function pgStore(url, legacyDir) {
         await q(`INSERT INTO card_fps (id, meta, fp, updated_at) VALUES ${values.join(',')}
                  ON CONFLICT (id) DO UPDATE SET meta = EXCLUDED.meta, fp = EXCLUDED.fp, updated_at = EXCLUDED.updated_at`, params);
       }
+    },
+
+    async getKv(key) { return (await q('SELECT value FROM kv WHERE key = $1', [key])).rows[0]?.value ?? null; },
+    async setKv(key, value) {
+      await q(`INSERT INTO kv (key, value, updated_at) VALUES ($1, $2, $3)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`, [key, JSON.stringify(value), Date.now()]);
     },
 
     async close() { await pool.end(); },

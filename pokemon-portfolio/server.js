@@ -10,6 +10,7 @@ const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
+const { createCatalog } = require('./lib/catalog');
 const CardDescriptor = require('./public/descriptor');
 
 const PORT = +process.env.PORT || 3000;
@@ -18,7 +19,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, visualIndex; // set up in start()
+let store, auth, leaderboard, groupsApi, visualIndex, catalog; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -254,6 +255,46 @@ async function api(req, res, url) {
     return send(res, 200, { prices: out, at: Date.now() });
   }
 
+  // --- PSA 10 value for many cards (portfolio sort: "Highest PSA potential") ---
+  if (pathname === '/api/prices/psa' && method === 'POST') {
+    limitApi(req);
+    const { cards } = await readBody(req);
+    if (!Array.isArray(cards) || cards.length > 25) throw httpError(400, 'Send up to 25 cards.');
+    const list = cards.filter((c) => c && typeof c.id === 'string' && c.id.length < 64);
+    const out = {};
+    let i = 0;
+    await Promise.all(Array.from({ length: 3 }, async () => {
+      while (i < list.length) {
+        const c = list[i++];
+        const key = `${c.id}|${c.variant || ''}`;
+        try {
+          const r = await prices.fullPrices(c.id, typeof c.variant === 'string' ? c.variant.slice(0, 40) : null);
+          const psa10 = r.graded?.prices?.['PSA 10'] ?? null;
+          out[key] = { psa10, estimated: !!r.graded?.estimated?.includes('PSA 10'), raw: r.raw?.price ?? null };
+        } catch (e) {
+          out[key] = { psa10: null, error: e.message };
+        }
+      }
+    }));
+    return send(res, 200, { prices: out, at: Date.now() });
+  }
+
+  // --- card index: every card, a page at a time (newest set first by default) ---
+  if (pathname === '/api/card-index' && method === 'POST') {
+    limitApi(req);
+    const b = await readBody(req);
+    const owned = Array.isArray(b.owned) ? b.owned.filter((x) => typeof x === 'string' && x.length < 80).slice(0, 20000) : [];
+    return send(res, 200, catalog.query({
+      sort: ['newest', 'oldest', 'name', 'rarity', 'set', 'collection'].includes(b.sort) ? b.sort : 'newest',
+      lang: ['en', 'ja'].includes(b.lang) ? b.lang : 'all',
+      q: typeof b.q === 'string' ? b.q.slice(0, 60) : '',
+      set: typeof b.set === 'string' ? b.set.slice(0, 60) : '',
+      owned, ownedOnly: b.ownedOnly === true,
+      offset: Math.max(0, Math.min(1e6, +b.offset || 0)),
+      limit: Math.max(6, Math.min(96, +b.limit || 24)),
+    }));
+  }
+
   // --- full price breakdown for one card (raw + graded) ---
   const m = decodeURIComponent(pathname).match(/^\/api\/prices\/([A-Za-z0-9._:-]{1,80})$/);
   if (m && method === 'GET') {
@@ -445,8 +486,9 @@ async function start() {
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
+  catalog = createCatalog({ store });
   visualIndex = createVisualIndex({
-    store,
+    store, catalog,
     langs: (process.env.VISUAL_INDEX_LANGS || 'en,ja').split(',').map((l) => l.trim()).filter((l) => l === 'en' || l === 'ja'),
   });
   await visualIndex.start();

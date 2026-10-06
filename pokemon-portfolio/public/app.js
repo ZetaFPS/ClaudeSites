@@ -442,6 +442,8 @@
     if (view !== 'scan' || focusSearch) stopCamera();
     else if (!stream) startCamera();
     if (view === 'scan' && !focusSearch) refreshIndexNote();
+    if (view === 'index') openIndex();
+    else clearTimeout(idx.retry);
     if (view === 'portfolio') renderPortfolio();
     if (view === 'leaders') loadLeaderboard();
     if (view === 'grade') prepareGrader();
@@ -594,6 +596,44 @@
   }));
   window.addEventListener('resize', () => { if ($('#view-portfolio').classList.contains('active') && !$('#app').hidden) renderChart(); });
 
+  /* ---------- "Highest PSA potential": what a card could gain if it graded PSA 10 ---------- */
+  const PSA_TTL = 12 * 3600e3;
+  const psaCache = new Map((() => { try { return JSON.parse(lsGet('pokefolio.psa') || '[]'); } catch { return []; } })());
+  let psaLoading = false;
+  const psaKey = (it) => `${it.cardId}|${it.variant || ''}`;
+  const psaOf = (it) => { const v = psaCache.get(psaKey(it)); return v && Date.now() - v.at < PSA_TTL ? v : null; };
+  function psaPotential(it) {
+    const p = psaOf(it);
+    if (!p || p.psa10 == null) return null;
+    return p.psa10 - (itemPrice(it) ?? p.raw ?? 0);
+  }
+  async function loadPsa(items) {
+    if (psaLoading) return;
+    const missing = [...new Map(items.filter((it) => !psaOf(it)).map((it) => [psaKey(it), it])).values()];
+    if (!missing.length) return;
+    psaLoading = true;
+    const note = $('#psaNote');
+    let done = 0;
+    try {
+      for (let i = 0; i < missing.length; i += 8) {
+        note.hidden = false;
+        note.textContent = `Looking up PSA 10 prices… ${done}/${missing.length}`;
+        const chunk = missing.slice(i, i + 8);
+        const r = await api('/api/prices/psa', { method: 'POST', body: { cards: chunk.map((it) => ({ id: it.cardId, variant: it.variant || null })) } }).catch(() => null);
+        for (const it of chunk) {
+          const v = r?.prices?.[psaKey(it)];
+          psaCache.set(psaKey(it), { psa10: v?.psa10 ?? null, estimated: !!v?.estimated, raw: v?.raw ?? null, at: Date.now() });
+        }
+        done += chunk.length;
+        lsSet('pokefolio.psa', JSON.stringify([...psaCache].slice(-1500)));
+        if ($('#sortSelect').value === 'psa') renderList();
+      }
+    } finally {
+      psaLoading = false;
+      note.hidden = true;
+    }
+  }
+
   function renderList() {
     const filter = $('#filterInput').value.trim().toLowerCase();
     const sort = $('#sortSelect').value;
@@ -604,7 +644,16 @@
       name: (a, b) => a.card.name.localeCompare(b.card.name),
       set: (a, b) => (b.card.set?.releaseDate || '').localeCompare(a.card.set?.releaseDate || '') || a.card.number.localeCompare(b.card.number, undefined, { numeric: true }),
       gain: (a, b) => (itemValue(b) - itemCost(b)) - (itemValue(a) - itemCost(a)),
+      // Most to gain from grading first (PSA 10 value minus raw value); unknown last.
+      psa: (a, b) => {
+        const pa = psaPotential(a), pb = psaPotential(b);
+        if (pa == null && pb == null) return itemValue(b) - itemValue(a);
+        if (pa == null) return 1;
+        if (pb == null) return -1;
+        return pb - pa;
+      },
     }[sort];
+    if (sort === 'psa') loadPsa(state.items);
     items.sort(cmp);
     $('#cardList').innerHTML = items.map((it) => {
       const c = it.card, price = itemPrice(it), gain = itemValue(it) - itemCost(it);
@@ -619,6 +668,7 @@
             ${c.lang === 'ja' ? '<span class="chip jp">Japanese</span>' : ''}
             ${it.variant ? `<span class="chip">${esc(VARIANT_LABELS[it.variant] || it.variant)}</span>` : ''}
             ${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ''}
+            ${sort === 'psa' ? psaChip(it) : ''}
           </div>
         </div>
         <div class="price">
@@ -628,6 +678,13 @@
         </div>
       </button>`;
     }).join('') || (state.items.length ? '<p class="muted" style="text-align:center;padding:16px">No cards match that filter.</p>' : '');
+  }
+  function psaChip(it) {
+    const p = psaOf(it);
+    if (!p) return '<span class="chip psa pending">PSA 10 …</span>';
+    if (p.psa10 == null) return '<span class="chip">No PSA 10 data</span>';
+    const gain = psaPotential(it);
+    return `<span class="chip psa" title="PSA 10 value${p.estimated ? ' (estimate)' : ''} and how much more than raw">PSA 10 ${p.estimated ? '≈' : ''}${money(p.psa10)} · ${gain >= 0 ? '+' : '−'}${money(Math.abs(gain))}</span>`;
   }
   $('#filterInput').addEventListener('input', renderList);
   $('#sortSelect').addEventListener('change', renderList);
@@ -1122,6 +1179,116 @@
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
     scanCanvas(c, { wholeImage: Math.abs(c.width / c.height - 63 / 88) > 0.06 });
   });
+
+  /* ================= Card index ================= */
+  // Every card, newest set first. Nothing is fetched until the Index is opened; then four rows at
+  // a time, and more only when "Load more" is pressed.
+  const idx = { items: [], total: 0, offset: 0, req: 0, started: false, retry: null, setsFor: null };
+  const idxOpts = () => ({
+    sort: $('#idxSort').value, lang: $('#idxLang').value, set: $('#idxSet').value,
+    q: $('#idxSearch').value.trim(), ownedOnly: $('#idxOwned').checked,
+  });
+  function idxPageSize() {
+    const cols = getComputedStyle($('#idxGrid')).gridTemplateColumns.split(' ').filter(Boolean).length || 2;
+    return Math.min(96, Math.max(2, cols) * 4);
+  }
+  function ownedCounts() {
+    const m = new Map();
+    for (const it of state.items) m.set(it.cardId, (m.get(it.cardId) || 0) + it.qty);
+    return m;
+  }
+  function openIndex() {
+    if (!idx.started) { idx.started = true; loadIndex(true); }
+    else renderIndex(); // refresh "owned" badges
+  }
+  async function loadIndex(reset = false) {
+    clearTimeout(idx.retry);
+    const o = idxOpts();
+    if (reset) {
+      idx.items = []; idx.offset = 0; idx.total = 0;
+      $('#idxGrid').innerHTML = Array.from({ length: Math.min(12, idxPageSize()) }, () => '<div class="skeleton"></div>').join('');
+      $('#idxCount').textContent = '';
+    }
+    const req = ++idx.req;
+    const more = $('#idxMore');
+    more.disabled = true;
+    more.textContent = 'Loading…';
+    const needOwned = o.sort === 'collection' || o.ownedOnly;
+    try {
+      const r = await api('/api/card-index', {
+        method: 'POST',
+        body: { ...o, owned: needOwned ? [...new Set(state.items.map((i) => i.cardId))] : [], offset: idx.offset, limit: idxPageSize() },
+      });
+      if (req !== idx.req) return;
+      if (r.loading) {
+        const st = Object.values(r.status || {}).find((x) => x.loading && x.progress);
+        const pct = st?.progress?.total ? ` (${Math.round(100 * st.progress.done / st.progress.total)}%)` : '';
+        $('#idxGrid').innerHTML = `<div class="idx-empty glass"><div class="reticle small busy" aria-hidden="true"></div><h3>Building the card index${pct}…</h3><p>Fetching every set for the first time — this takes a minute and only happens once.</p></div>`;
+        more.hidden = true;
+        if ($('#view-index').classList.contains('active')) idx.retry = setTimeout(() => loadIndex(true), 3000);
+        return;
+      }
+      if (r.sets && idx.setsFor !== o.lang) fillIndexSets(r.sets, o.lang);
+      idx.items.push(...r.items);
+      idx.total = r.total;
+      idx.offset += r.items.length;
+      renderIndex();
+    } catch (e) {
+      if (req !== idx.req) return;
+      if (reset) $('#idxGrid').innerHTML = `<div class="idx-empty glass"><h3>Couldn’t load the card index</h3><p>${esc(e.status === 429 ? e.message : 'Check your connection and try again.')}</p></div>`;
+      else toast('Couldn’t load more cards — try again');
+    } finally {
+      if (req === idx.req) { more.disabled = false; more.textContent = 'Load more'; }
+    }
+  }
+  function fillIndexSets(sets, lang) {
+    idx.setsFor = lang;
+    const sel = $('#idxSet');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All sets</option>' + sets.map((st) => `<option value="${esc(st.id)}">${esc(st.name)}${st.lang === 'ja' ? ' (JP)' : ''}${st.released ? ` · ${esc(String(st.released).slice(0, 4))}` : ''}</option>`).join('');
+    sel.value = sets.some((st) => st.id === cur) ? cur : '';
+  }
+  function renderIndex() {
+    const grid = $('#idxGrid');
+    const o = idxOpts();
+    const owned = ownedCounts();
+    const grouped = ['newest', 'oldest', 'set'].includes(o.sort) && !o.set;
+    let last = null, html = '';
+    idx.items.forEach((c, i) => {
+      if (grouped && c.set?.id !== last) {
+        last = c.set?.id;
+        const yr = c.set?.releaseDate ? String(c.set.releaseDate).slice(0, 4) : '';
+        html += `<h3 class="idx-set">${esc(c.set?.name || 'Unknown set')}${c.lang === 'ja' ? ' <span class="chip jp">JP</span>' : ''}<small>${esc([c.set?.series, yr].filter(Boolean).join(' · '))}</small></h3>`;
+      }
+      const n = owned.get(c.id);
+      html += `<button class="result idx-card ${n ? 'is-owned' : ''}" data-ii="${i}">
+          ${n ? `<span class="owned-tag">✓ ${n > 1 ? `×${n}` : 'Owned'}</span>` : ''}
+          <img ${imgAttrs(c, 'small')} alt="" loading="lazy" decoding="async">
+          <div class="name">${esc(c.name)}</div>
+          <div class="sub">${c.lang === 'ja' ? '<span class="chip jp">JP</span> ' : ''}${esc(c.set?.name)} · #${esc(c.number)}</div>
+          ${c.rarity ? `<div class="sub rar">${esc(c.rarity)}</div>` : ''}
+        </button>`;
+    });
+    grid.innerHTML = html || '<div class="idx-empty glass"><h3>No cards match</h3><p>Try a different search or filter.</p></div>';
+    $('#idxCount').textContent = idx.total ? `Showing ${idx.items.length.toLocaleString()} of ${idx.total.toLocaleString()} cards` : '';
+    $('#idxMore').hidden = idx.items.length >= idx.total;
+  }
+  $('#idxMore').addEventListener('click', () => loadIndex(false));
+  $('#idxGrid').addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-ii]');
+    if (!t) return;
+    const c = idx.items[+t.dataset.ii];
+    try {
+      const { card } = await api(`/api/card/${encodeURIComponent(c.id)}`);
+      openCard({ card });
+    } catch {
+      toast('Couldn’t load that card — try again');
+    }
+  });
+  let idxTyping = null;
+  $('#idxSearch').addEventListener('input', () => { clearTimeout(idxTyping); idxTyping = setTimeout(() => loadIndex(true), 350); });
+  $('#idxForm').addEventListener('submit', (e) => { e.preventDefault(); clearTimeout(idxTyping); loadIndex(true); });
+  for (const id of ['#idxSort', '#idxSet', '#idxLang', '#idxOwned']) $(id).addEventListener('change', () => loadIndex(true));
 
   /* ================= Card detail sheet ================= */
   let sheetCtx = null;

@@ -109,9 +109,11 @@
               <option value="name">Name A–Z</option>
               <option value="set">Set</option>
               <option value="gain">P/L ↓</option>
+              <option value="psa">Highest PSA potential</option>
             </select>
           </div>
         </div>
+        <p class="psa-note" id="psaNote" hidden></p>
         <div class="card-list" id="cardList"></div>
         <div class="empty-state" id="emptyState" hidden>
           <div class="empty-art" aria-hidden="true"></div>
@@ -173,6 +175,38 @@
           <p>Snap a card with the camera or upload a photo — English or Japanese. PokéFolio compares your photo with the pictures of every card it knows, while it reads the name, number and set code to confirm the match.</p>
         </div>
         </div>
+        </div>
+      </section>
+      <!-- CARD INDEX -->
+      <section class="view" id="view-index" aria-label="Card index">
+        <div class="page-head">
+          <div>
+            <h2>Card index</h2>
+            <p class="muted" id="idxSub">Every Pokémon card, newest set first</p>
+          </div>
+        </div>
+        <form class="idx-tools" id="idxForm">
+          <input type="search" id="idxSearch" placeholder="Search name or number…" aria-label="Search the index" autocomplete="off">
+          <select id="idxSort" aria-label="Sort">
+            <option value="newest">Newest set first</option>
+            <option value="oldest">Oldest set first</option>
+            <option value="name">Name A–Z</option>
+            <option value="rarity">Rarity (rarest first)</option>
+            <option value="set">Set name A–Z</option>
+            <option value="collection">My collection first</option>
+          </select>
+          <select id="idxSet" aria-label="Set"><option value="">All sets</option></select>
+          <select id="idxLang" aria-label="Language">
+            <option value="all">All languages</option>
+            <option value="en">English</option>
+            <option value="ja">Japanese</option>
+          </select>
+          <label class="idx-owned"><input type="checkbox" id="idxOwned"> Only cards I own</label>
+        </form>
+        <div class="results-grid idx-grid" id="idxGrid"></div>
+        <div class="idx-foot">
+          <p class="muted" id="idxCount"></p>
+          <button class="btn primary glow" id="idxMore" hidden>Load more</button>
         </div>
       </section>
       <!-- LEADERBOARD -->
@@ -280,6 +314,10 @@
       <button class="tab active" data-goto="portfolio">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 4 8-9"/><path d="M14 7h6v6"/></svg>
         <span>Portfolio</span>
+      </button>
+      <button class="tab" data-goto="index">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="9" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        <span>Index</span>
       </button>
       <button class="tab" data-goto="leaders">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/></svg>

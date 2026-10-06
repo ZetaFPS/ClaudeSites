@@ -41,6 +41,13 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
   and shrunk on your device before upload, stored in the database, and shown in the top bar, on the
   leaderboard and profiles, and in group chats and member lists.
+- **Card index** — the Index tab lists every card, English and Japanese, newest set first with a
+  heading per set. It loads four rows at a time (more with **Load more**) and nothing is fetched
+  until you open it. Sort by newest/oldest set, name, rarity (rarest first), set name, or *my
+  collection first*; filter by set, language, a name/number search, or *only cards I own* (owned
+  cards are marked ✓). The catalogue is fetched once, saved in the database, and refreshed daily.
+- **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
+  than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
 - **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
   to see their 5 most valuable cards. Values are recalculated on the server from current market
   prices (saved prices can't be faked), and only display names, totals and top cards are public —

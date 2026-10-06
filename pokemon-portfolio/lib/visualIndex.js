@@ -16,7 +16,6 @@ try {
 } catch { /* index disabled without sharp */ }
 
 const POKEMONTCG = 'https://api.pokemontcg.io/v2';
-const TCGDEX = 'https://api.tcgdex.net/v2';
 const UA = 'Mozilla/5.0 (compatible; PokeFolio/2.3)';
 const DAY = 24 * 3600e3;
 
@@ -36,7 +35,6 @@ async function fetchWithTimeout(url, ms = 15000, accept = '*/*') {
     clearTimeout(t);
   }
 }
-const getJson = async (url, ms) => (await fetchWithTimeout(url, ms, 'application/json')).json();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function retry(fn, tries = 3, wait = 3000) {
   for (let i = 1; ; i++) {
@@ -50,54 +48,13 @@ async function mapLimit(items, n, fn) {
   }));
 }
 
-/* ---------------- catalogues ---------------- */
-// English: every card from the Pokémon TCG API, newest sets first.
-async function englishCatalog() {
-  const out = [];
-  for (let page = 1; page < 400; page++) {
-    const params = new URLSearchParams({ page: String(page), pageSize: '250', orderBy: '-set.releaseDate', select: 'id,name,number,images,set' });
-    const res = await retry(() => getJson(`${POKEMONTCG}/cards?${params}`, 30000));
-    for (const c of res.data || []) {
-      if (!c.images?.small) continue;
-      out.push({
-        id: c.id, lang: 'en', name: c.name, number: c.number, setId: c.set?.id, setName: c.set?.name,
-        total: c.set?.printedTotal, released: c.set?.releaseDate, code: c.set?.ptcgoCode, img: c.images.small, alt: c.images.large,
-      });
-    }
-    if (!res.data?.length || page * 250 >= (res.totalCount || 0)) break;
-  }
-  return out;
-}
-// TCGdex catalogue for one language (Japanese, or English when the Pokémon TCG API is down).
-async function tcgdexCatalog(lang) {
-  const prefix = lang === 'ja' ? 'tcgdexja:' : 'tcgdex:';
-  const sets = await retry(() => getJson(`${TCGDEX}/${lang}/sets`, 30000));
-  const full = [];
-  await mapLimit(Array.isArray(sets) ? sets : [], 4, async (s) => {
-    const set = await retry(() => getJson(`${TCGDEX}/${lang}/sets/${encodeURIComponent(s.id)}`, 20000), 2).catch(() => null);
-    if (set?.cards) full.push(set);
-  });
-  full.sort((a, b) => String(b.releaseDate || '').localeCompare(String(a.releaseDate || '')));
-  const out = [];
-  for (const set of full) {
-    for (const c of set.cards) {
-      if (!c.image) continue;
-      out.push({
-        id: `${prefix}${c.id}`, lang, name: c.name, number: c.localId, setId: set.id, setName: set.name,
-        total: set.cardCount?.official, released: set.releaseDate, img: `${c.image}/low.webp`, alt: `${c.image}/low.png`,
-      });
-    }
-  }
-  return out;
-}
-
 /* ---------------- fingerprints ---------------- */
 async function fingerprintImage(buf) {
   const px = await sharp(buf).resize(D.W, D.H, { fit: 'fill' }).removeAlpha().raw().toBuffer();
   return D.compute(px, 3);
 }
 
-function createVisualIndex({ store, langs = ['en', 'ja'], log = console, concurrency = 3, autoStart = true } = {}) {
+function createVisualIndex({ store, catalog, langs = ['en', 'ja'], log = console, concurrency = 3, autoStart = true } = {}) {
   const enabled = !!sharp && process.env.VISUAL_INDEX !== 'off';
   // Packed storage: row i's descriptor is fps[i*LEN … (i+1)*LEN).
   let fps = new Int8Array(0);
@@ -140,15 +97,12 @@ function createVisualIndex({ store, langs = ['en', 'ja'], log = console, concurr
     try {
       for (const lang of langs) {
         state.phase = `listing ${lang === 'ja' ? 'Japanese' : 'English'} cards`;
-        let catalog;
-        try {
-          catalog = lang === 'en' ? await englishCatalog() : await tcgdexCatalog(lang);
-        } catch (e) {
-          if (lang !== 'en') throw e;
-          log.warn?.(`visual index: Pokémon TCG API catalogue unavailable (${e.message}) — using TCGdex`);
-          catalog = await tcgdexCatalog('en');
-        }
-        const todo = catalog.filter((c) => !pos.has(c.id));
+        // The shared catalogue (refreshed for new sets); only cards with a picture can be indexed.
+        const list = await catalog.refresh(lang);
+        const todo = list.filter((c) => c.img && !pos.has(c.id)).map((c) => ({
+          id: c.id, lang: c.lang, name: c.name, number: c.number, setId: c.setId, setName: c.setName,
+          total: c.total, released: c.released, code: c.code || undefined, img: c.img, alt: c.alt || undefined,
+        }));
         state.queued += todo.length;
         state.phase = `indexing ${lang === 'ja' ? 'Japanese' : 'English'} cards`;
         let pending = [];
@@ -272,4 +226,4 @@ function liteCard(m) {
   };
 }
 
-module.exports = { createVisualIndex, liteCard, fingerprintImage, _test: { englishCatalog, tcgdexCatalog } };
+module.exports = { createVisualIndex, liteCard, fingerprintImage };
