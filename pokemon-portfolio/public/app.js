@@ -2022,13 +2022,100 @@
 
   /* ================= Grader ================= */
   const gradeFiles = { front: null, back: null };
+  /* ---------- which card is being graded (official image = reference) ---------- */
+  let gradeRef = null;     // the selected card
+  let gradeChoices = [];   // cards currently offered as tiles
+  let gradeSuggestReq = 0;
+  function showGradeChoices(cards, label, scores = null) {
+    gradeChoices = cards;
+    $('#gradeResLabel').hidden = !label;
+    $('#gradeResLabel').textContent = label || '';
+    $('#gradeResults').innerHTML = cards.map((c, i) => `
+      <button type="button" class="gp-tile" data-gi="${i}">
+        ${scores?.get(c.id) != null ? `<span class="match">${Math.round(scores.get(c.id) * 100)}%</span>` : ''}
+        <img ${imgAttrs(c, 'small', { proxy: true })} alt="" loading="lazy">
+        <b>${esc(c.name)}</b>
+        <small>${c.lang === 'ja' ? 'JP · ' : ''}${esc(c.set?.name)} · #${esc(c.number)}</small>
+      </button>`).join('');
+  }
+  function showCollectionChoices() {
+    const mine = [...new Map(state.items.filter((it) => it.card).map((it) => [it.cardId, it.card])).values()].slice(0, 12);
+    showGradeChoices(mine, mine.length ? 'From your collection' : '');
+  }
+  function paintGradeRef() {
+    const box = $('#gradeSelected');
+    $('#gradeFinder').hidden = !!gradeRef;
+    box.hidden = !gradeRef;
+    if (!gradeRef) return;
+    const c = gradeRef;
+    box.innerHTML = `<img ${imgAttrs(c, 'small', { proxy: true })} alt="">
+      <div class="meta"><span class="ok">✓ Selected</span><b>${esc(c.name)}</b><small>${c.lang === 'ja' ? 'Japanese · ' : ''}${esc(c.set?.name)} · #${esc(c.number)}${c.set?.printedTotal ? '/' + esc(c.set.printedTotal) : ''}</small></div>
+      <button type="button" class="btn ghost" id="gradeChange">Change</button>`;
+  }
+  async function selectGradeCard(c) {
+    gradeRef = c;
+    paintGradeRef();
+    if (c.lite) {
+      try { const { card } = await api(`/api/card/${encodeURIComponent(c.id)}`); if (gradeRef?.id === c.id) { gradeRef = card; paintGradeRef(); } } catch { /* the lightweight card is enough to grade */ }
+    }
+  }
+  $('#gradeResults').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-gi]');
+    if (t) selectGradeCard(gradeChoices[+t.dataset.gi]);
+  });
+  $('#gradeSelected').addEventListener('click', (e) => {
+    if (!e.target.closest('#gradeChange')) return;
+    gradeRef = null;
+    paintGradeRef();
+    if (!gradeChoices.length) showCollectionChoices();
+    $('#gradeQuery').focus();
+  });
+  $('#gradeSearch').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const q = $('#gradeQuery').value.trim();
+    if (!q) return showCollectionChoices();
+    $('#gradeResLabel').hidden = false;
+    $('#gradeResLabel').textContent = 'Searching…';
+    $('#gradeResults').innerHTML = '';
+    try {
+      const cards = await findCards(parseSearchText(q));
+      showGradeChoices(cards.slice(0, 24), cards.length ? `Tap the card you’re grading` : `No cards found for “${q}”`);
+    } catch (err) {
+      showGradeChoices([], err.status === 429 ? err.message : 'Couldn’t reach the card database — try again.');
+    }
+  });
+  // Suggest the card from the front photo, using the scanner's image recognition.
+  async function suggestFromPhoto(file) {
+    if (gradeRef || !window.CardVision) return;
+    const req = ++gradeSuggestReq;
+    try {
+      const bmp = await createImageBitmap(file);
+      const c = document.createElement('canvas');
+      const sc = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
+      c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      $('#gradeResLabel').hidden = false;
+      $('#gradeResLabel').textContent = 'Recognising your card…';
+      const res = await visualSearch(c, { isCard: false, lang: 'any' });
+      if (req !== gradeSuggestReq || gradeRef) return;
+      const hits = (res?.results || []).slice(0, 6);
+      if (!hits.length) return showCollectionChoices();
+      showGradeChoices(hits.map((h) => h.card), 'Is it one of these? Tap to select — or search', new Map(hits.map((h) => [h.card.id, h.score])));
+    } catch {
+      if (req === gradeSuggestReq) showCollectionChoices();
+    }
+  }
   function prepareGrader() {
-    const sel = $('#gradeCard');
-    const current = sel.value;
-    sel.innerHTML = '<option value="">Not linked</option>' + state.items
-      .filter((it) => it.card)
-      .map((it) => `<option value="${esc(it.uid)}">${esc(it.card.name)} · ${esc(it.card.set?.name)} #${esc(it.card.number)}</option>`).join('');
-    sel.value = state.items.some((it) => it.uid === current) ? current : '';
+    paintGradeRef();
+    if (!gradeRef && !gradeChoices.length && !$('#gradeQuery').value) showCollectionChoices();
+  }
+  function loadRefImage(card) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = cardImgUrl(card.id, 'large');
+    });
   }
   for (const side of ['front', 'back']) {
     const input = $(side === 'front' ? '#gradeFront' : '#gradeBack');
@@ -2043,6 +2130,7 @@
       img.hidden = false;
       drop.classList.add('has-img');
       $('#gradeBtn').disabled = !gradeFiles.front;
+      if (side === 'front') suggestFromPhoto(f);
     });
   }
 
@@ -2055,7 +2143,9 @@
     btn.textContent = 'Analysing…';
     out.innerHTML = '<div class="grade-empty glass"><div class="reticle small busy" aria-hidden="true"></div><h3>Measuring centering, edges, corners & surface…</h3></div>';
     try {
-      const r = await window.CardGrader.grade(gradeFiles.front, gradeFiles.back);
+      const reference = gradeRef ? await loadRefImage(gradeRef) : null;
+      if (gradeRef && !reference) toast('Couldn’t load the card’s official image — grading without it');
+      const r = await window.CardGrader.grade(gradeFiles.front, gradeFiles.back, { reference });
       if (!r.ok) {
         out.innerHTML = `<div class="grade-empty glass"><h3>Couldn’t grade that</h3>${r.errors.map((e) => `<p>${esc(e)}</p>`).join('')}</div>`;
         return;
@@ -2092,7 +2182,8 @@
           </div>
         </div>`;
     };
-    const linked = state.items.find((it) => it.uid === $('#gradeCard').value);
+    const linked = gradeRef && (state.items.find((it) => it.cardId === gradeRef.id)
+      || { cardId: gradeRef.id, variant: defaultVariant(gradeRef), card: gradeRef });
     out.innerHTML = `
       <div class="grade-hero glass edge">
         <div class="grade-badge ${r.overall >= 9 ? 'hi' : r.overall >= 7 ? 'mid' : 'lo'}">
@@ -2119,7 +2210,7 @@
       </div>
       <div class="section"><h4>What we measured</h4>
         <div class="overlays">
-          ${Object.keys(r.sides).map((s) => `<figure><canvas data-ov="${s}"></canvas><figcaption>${s === 'front' ? 'Front' : 'Back'} — <span class="k-cyan">border lines</span> · <span class="k-red">edge wear</span> · <span class="k-green">good corner</span> / <span class="k-red">worn corner</span>${s === 'back' ? ' · <span class="k-amber">crease / spot</span>' : ' · <span class="k-amber">spot</span>'}</figcaption></figure>`).join('')}
+          ${Object.keys(r.sides).map((s) => `<figure><canvas data-ov="${s}"></canvas><figcaption>${s === 'front' ? 'Front' : 'Back'} — <span class="k-cyan">border lines</span> · <span class="k-red">edge wear</span> · <span class="k-green">good corner</span> / <span class="k-red">worn corner</span>${s === 'back' || r.sides[s].reference?.ok ? ' · <span class="k-amber">crease / spot</span>' : ' · <span class="k-amber">spot</span>'}</figcaption></figure>`).join('')}
         </div>
       </div>
       <p class="note">This is an estimate from photos, not an official grade. Grading companies inspect cards under magnification and lighting a photo can’t reproduce; holo scratches, print lines and very small dings may not show up. Centering standards used: PSA 10 = 55/45 front, 75/25 back.</p>`;

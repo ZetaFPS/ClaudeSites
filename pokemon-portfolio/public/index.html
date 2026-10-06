@@ -240,9 +240,18 @@
                 <img alt="" hidden>
               </label>
             </div>
-            <div class="field">
-              <label for="gradeCard">Card (optional — shows its value at the estimated grade)</label>
-              <select id="gradeCard"><option value="">Not linked</option></select>
+            <div class="field grade-pick">
+              <label for="gradeQuery">Which card is this? <span class="rec">Recommended</span></label>
+              <p class="gp-hint">Search and select the exact card. Its official picture is compared with your photo, so the card’s own artwork and printed lines aren’t mistaken for creases or marks — and you’ll see its value at the estimated grade.</p>
+              <div class="gp-selected glass" id="gradeSelected" hidden></div>
+              <div id="gradeFinder">
+                <form class="search-bar gp-search" id="gradeSearch">
+                  <input type="search" id="gradeQuery" placeholder="Search “Pikipek 220/191”…" aria-label="Search for the card you're grading" autocomplete="off">
+                  <button class="btn primary" type="submit">Find</button>
+                </form>
+                <div class="gp-label" id="gradeResLabel" hidden></div>
+                <div class="gp-results" id="gradeResults"></div>
+              </div>
             </div>
             <button class="btn primary glow block" id="gradeBtn" disabled>Grade my card</button>
             <div class="tips glass">

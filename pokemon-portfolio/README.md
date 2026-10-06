@@ -65,8 +65,14 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   the border colour at that spot, single-pixel foil glints are ignored, and only marks darker than
   the border count as dirt (reflections are always brighter). Detected shine is reported as info,
   not counted against the grade.
-  The report shows what was measured on the straightened photos and, if you link a card from your
-  collection, its value at the estimated grade. (`public/grader.js`; runs entirely in the browser.)
+  **Which card is this?** After you add the front photo, the grader recognises the card (same
+  image recognition as the scanner) and suggests it — or search and select it. Its official picture
+  is then lined up with your photo and colour-matched, so the card's own artwork, printed lines and
+  logos are ignored: creases and marks are found on the *front* too (lines and spots that aren't on
+  the official image), and you see the card's value at the estimated grade. If the photo doesn't
+  match the selected card, you're told and it's ignored. On the back, the POKéMON logos' letters
+  line up in long straight lines, so shallow lines inside the logo bands aren't counted as creases.
+  The report shows what was measured on the straightened photos. (`public/grader.js`; runs entirely in the browser.)
 - Works on phones, tablets and desktops: on large screens you get a sidebar, a dashboard layout,
   a card-grid collection and a side-by-side card view.
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,

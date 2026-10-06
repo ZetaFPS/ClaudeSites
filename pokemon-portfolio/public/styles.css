@@ -929,3 +929,24 @@ main > .storage-warn { margin: 0 16px 16px; }
 .est-tag { font-style: normal; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--violet); border: 1px solid rgba(167, 139, 250, .45); border-radius: 5px; padding: 0 4px; vertical-align: 1px; }
 .est-note { font-size: 12px; line-height: 1.5; color: var(--text-2); margin: 12px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(167, 139, 250, .08); border: 1px solid rgba(167, 139, 250, .25); }
 .est-note b { color: var(--violet); }
+
+/* ---------- Grader: which card is this? ---------- */
+.grade-pick label .rec { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--cyan); border: 1px solid rgba(34, 211, 238, .35); background: rgba(34, 211, 238, .1); padding: 1px 6px; border-radius: 6px; margin-left: 6px; vertical-align: 1px; }
+.gp-hint { font-size: 12.5px; color: var(--text-3); margin: 2px 0 10px; line-height: 1.45; }
+.gp-search { margin: 0 0 10px; }
+.gp-search input { min-width: 0; }
+.gp-label { font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); margin: 4px 0 8px; font-weight: 600; }
+.gp-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 8px; }
+.gp-results:empty { display: none; }
+.gp-tile { display: flex; flex-direction: column; gap: 3px; padding: 6px; border-radius: 10px; border: 1px solid var(--edge); background: var(--glass); text-align: left; color: var(--text); min-width: 0; }
+.gp-tile:hover, .gp-tile:focus-visible { border-color: rgba(34, 211, 238, .55); }
+.gp-tile img { width: 100%; aspect-ratio: 63/88; object-fit: cover; border-radius: 6px; background: var(--glass-2); }
+.gp-tile b { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp-tile small { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp-tile .match { order: 0; align-self: flex-start; font-size: 9.5px; padding: 1px 5px; }
+.gp-selected { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px; border: 1px solid rgba(34, 211, 238, .4); }
+.gp-selected img { width: 52px; aspect-ratio: 63/88; object-fit: cover; border-radius: 6px; flex: none; }
+.gp-selected .meta { flex: 1; min-width: 0; }
+.gp-selected .meta b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp-selected .meta small { color: var(--text-3); font-size: 12px; }
+.gp-selected .ok { color: var(--green, #34f5a6); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
