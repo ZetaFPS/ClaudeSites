@@ -46,8 +46,8 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   **estimated** — scaled from the card's real graded sales when it has some, otherwise from its raw
   price using typical PSA premiums — and always shown as "≈ … est." with a striped bar.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
-  and shrunk on your device before upload, stored in the database, and shown in the top bar, on the
-  leaderboard and profiles, and in group chats and member lists.
+  and shrunk on your device before upload, stored in the database, and shown in the top bar, on
+  profiles and marketplace listings, and in chats and member lists.
 - **Card index** — the Index tab lists every card, English and Japanese, newest set first with a
   heading per set. It loads four rows at a time (more with **Load more**) and nothing is fetched
   until you open it. Sort by newest/oldest set, name, rarity (rarest first), set name, or *my
@@ -78,33 +78,38 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
-- **Leaderboard** — collectors ranked by collection value, with a podium for the top 3. Tap anyone
-  to see their 5 most valuable cards. Values are recalculated on the server from current market
-  prices (saved prices can't be faked), and only display names, totals and top cards are public —
-  never emails. Anyone can hide themselves under **Account → Show me on the leaderboard**.
-- **Groups** — create a group, name it and invite friends with an 8-character code or link.
-  Each group has a chat (text, photos, and cards shared from your collection with their live
-  price), its own members-only leaderboard (same server-side values as the global one), and a
-  members page. The owner can rename the group, reset the invite code, remove members or delete
+- **Navigation** — on phones the bottom bar has **Portfolio · Messages · Scan · Friends · More**;
+  **More** opens Index, Packs, Marketplace, Grade (beta) and Search. On wide screens every page is
+  in the sidebar.
+- **Marketplace** — every collector's store listings in one place, newest first or sorted by
+  price, 24 at a time. Search matches every word you type against titles, descriptions and seller
+  names/usernames. **+ Sell something** posts a listing straight from the page. Anyone can browse;
+  contacting a seller needs an account (add them as a friend, then **Message seller**).
+- **Messages** — direct messages with friends and group chats, in one list. Create a group, name
+  it and invite friends with an 8-character code or link. Each group has a chat (text, photos, and
+  cards shared from your collection with their live price), its own members-only leaderboard
+  (collection values recalculated on the server from current market prices, so they can't be
+  faked), and a members page. The owner can rename the group, reset the invite code, remove members or delete
   it; members can delete their own messages and leave. Only members can read a group or load its
   photos. Messages and photos are stored in the database, so they survive site updates too.
 - **Usernames & profiles** — every account has a unique @username (picked at sign-up; older
-  accounts are asked once). Tap anyone on a leaderboard, in your friends list or in a chat to open
+  accounts are asked once). Tap a seller in the Marketplace, anyone in your friends list or in a chat to open
   their profile: picture, @username, an "About you" description (up to 300 characters, edited under
-  **Account**), collection value and top 5 cards, and their store. **Account → Show my whole
+  **Account**), collection value and top 5 cards (hide them with **Account → Show my collection
+  value**), and their store. **Account → Show my whole
   collection** lets anyone viewing your profile browse every card you own (most valuable first,
   60 at a time); it's off by default, and you can always browse your own.
-- **Friends** — add collectors by @username on the **Friends** page (under **More** on phones) or
+- **Friends** — add collectors by @username on the **Friends** page or
   with **+ Add friend** on their profile. They accept or decline; either of you can cancel or
   unfriend. New requests show a badge on the Friends tab.
 - **Direct messages** — friends can message each other one-to-one (**Message** on a profile or in
-  the friends list). Direct chats appear with your groups and work the same way (text, photos,
+  the friends list). Direct chats appear in **Messages** with your groups and work the same way (text, photos,
   card shares), but only between people who are still friends.
 - **Stores** — list things you're selling or trading on your profile: up to 6 pictures (resized
   on your device), a title, a price and a description; edit or delete them any time (up to 60
   listings). There's no checkout: a buyer adds you as a friend and taps **Message seller**, which
   opens your chat with a message about the listing ready to send.
-- **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades.
+- **Pre-grading (beta, still in development)** — upload photos of the front and back for a PSA-style estimate with sub-grades.
   Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as
   straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots
   don't produce fake corner dings or off-centering:
@@ -219,7 +224,7 @@ server.js        HTTP server: static files, /api/auth/*, /api/portfolio, /api/se
 lib/auth.js      scrypt password hashing, 30-day HttpOnly session cookies
 lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
-lib/leaderboard.js  server-side collection values and rankings (global + per group)
+lib/leaderboard.js  server-side collection values (profiles, group leaderboards)
 lib/groups.js    groups API: invites, chat, photos, card shares, permissions
 lib/social.js    profiles, friends, direct messages (two-person group chats) and store listings
 lib/visualIndex.js  picture fingerprints of every card (English + Japanese) and the photo search

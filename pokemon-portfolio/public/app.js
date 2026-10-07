@@ -241,7 +241,7 @@
           <div class="info" style="grid-column:1/-1"><div class="k">Account storage</div><div class="v">${storageInfo?.persistent === false ? '<span class="down">⚠ Temporary — erased when the site updates</span>' : storageInfo?.storage === 'postgres' ? '<span class="up">✓ Database — kept across updates</span>' : 'Saved on this server'}</div></div>
         </div>
         <label class="switch-row glass">
-          <span><b>Show me on the leaderboard</b><small>Shows your display name, total value and top 5 cards. Never your email.</small></span>
+          <span><b>Show my collection value</b><small>Shows your total value and top 5 cards on your profile. Never your email.</small></span>
           <input type="checkbox" id="lbToggle" ${user.showOnLeaderboard !== false ? 'checked' : ''}><i aria-hidden="true"></i>
         </label>
         <label class="switch-row glass">
@@ -273,7 +273,7 @@
       const on = e.currentTarget.checked;
       try {
         user = (await api('/api/account', { method: 'PUT', body: { showOnLeaderboard: on } })).user;
-        toast(on ? 'You’re on the leaderboard' : 'Hidden from the leaderboard');
+        toast(on ? 'Your collection value is shown on your profile' : 'Your collection value is hidden');
         lbData = null;
       } catch {
         e.currentTarget.checked = !on;
@@ -493,8 +493,8 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.goto === view && ('focusSearch' in t.dataset) === focusSearch));
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
-    // On phones, Leaders/Groups/Grade/Search live under "More": highlight it when one is open.
-    $('#moreBtn').classList.toggle('active', ['leaders', 'groups', 'friends', 'grade'].includes(view) || (view === 'scan' && focusSearch));
+    // On phones, Index/Packs/Marketplace/Grade/Search live under "More": highlight it when one is open.
+    $('#moreBtn').classList.toggle('active', ['index', 'packs', 'market', 'grade'].includes(view) || (view === 'scan' && focusSearch));
     $$('#moreMenu [data-goto]').forEach((b) => b.classList.toggle('active', b.dataset.goto === view && ('focusSearch' in b.dataset) === focusSearch));
     closeMore();
     if (view !== 'scan' || focusSearch) stopCamera();
@@ -505,7 +505,7 @@
     if (view === 'packs') openPacksView();
     else clearTimeout(packs.retry);
     if (view === 'portfolio') renderPortfolio();
-    if (view === 'leaders') loadLeaderboard();
+    if (view === 'market') openMarket();
     if (view === 'grade') prepareGrader();
     if (view === 'groups') loadGroups();
     if (view === 'friends') loadFriends();
@@ -2074,57 +2074,12 @@
   $('#sheetBackdrop').addEventListener('click', closeSheet);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
 
-  /* ================= Leaderboard ================= */
-  let lbData = null;
-  let lbLoading = null;
+  /* ================= Leaderboards (inside group chats) ================= */
+  let lbData = null; // cached profile data is refreshed when this is cleared
   const medal = (r) => (r === 1 ? 'gold' : r === 2 ? 'silver' : r === 3 ? 'bronze' : '');
   const nameInitial = (n) => esc(String(n || '?').trim().charAt(0).toUpperCase() || '?');
 
-  async function loadLeaderboard(force = false) {
-    if (lbData && !force) return renderLeaderboard();
-    if (!lbData) {
-      $('#podium').innerHTML = '';
-      $('#lbList').innerHTML = Array.from({ length: 5 }, () => '<div class="lb-row skeleton-row"></div>').join('');
-    }
-    if (!lbLoading) {
-      lbLoading = api('/api/leaderboard').finally(() => { lbLoading = null; });
-    }
-    try {
-      lbData = await lbLoading;
-      renderLeaderboard();
-    } catch (e) {
-      $('#lbList').innerHTML = `<p class="note">${e.status === 429 ? esc(e.message) : 'Couldn’t load the leaderboard. Try again shortly.'}</p>`;
-    }
-  }
-  $('#lbRefresh').addEventListener('click', () => loadLeaderboard(true));
-
-  function renderLeaderboard() {
-    const d = lbData;
-    const entries = d.entries || [];
-    $('#lbSub').textContent = `${d.total} collector${d.total === 1 ? '' : 's'} · updated ${timeAgo(d.computedAt)}`;
-    const me = $('#lbMe');
-    if (user && d.me) {
-      me.hidden = false;
-      me.innerHTML = d.me.hidden
-        ? `<span class="lb-me-rank">—</span><span><b>You’re hidden from the leaderboard</b><small>Your collection: ${money(d.me.value)} · turn visibility on in your account</small></span>`
-        : `<span class="lb-me-rank num">#${d.me.rank}</span><span><b>Your rank</b><small>${money(d.me.value)} · ${d.me.cards} card${d.me.cards === 1 ? '' : 's'}</small></span>`;
-    } else if (!user) {
-      me.hidden = false;
-      me.innerHTML = '<span class="lb-me-rank">?</span><span><b>Want a spot on the board?</b><small>Create a free account and your collection is ranked automatically.</small></span>';
-    } else {
-      me.hidden = false;
-      me.innerHTML = '<span class="lb-me-rank">—</span><span><b>Not ranked yet</b><small>Add cards to your collection to join the leaderboard.</small></span>';
-    }
-    if (!entries.length) {
-      $('#podium').innerHTML = '';
-      $('#lbList').innerHTML = '<div class="empty-state"><h3>No collectors yet</h3><p>Be the first — add cards to your collection.</p></div>';
-      return;
-    }
-    $('#podium').innerHTML = podiumHtml(entries, 'data-lb');
-    $('#lbList').innerHTML = boardListHtml(entries.slice(3), 'data-lb');
-  }
-
-  // Shared by the global and group leaderboards. `attr` decides which click handler opens profiles.
+  // Group leaderboards. `attr` decides which click handler opens profiles.
   function podiumHtml(entries, attr) {
     const top3 = entries.slice(0, 3);
     const order = [top3[1], top3[0], top3[2]].filter(Boolean); // 2nd, 1st, 3rd
@@ -2181,12 +2136,14 @@
       default: return '<button class="btn primary glow" data-pa="add">+ Add friend</button>';
     }
   }
-  const storeGrid = (products, self) => (products.length ? `<div class="store-grid">${products.map((p) => `
+  const listingTile = (p) => `
       <button class="listing" data-listing="${esc(p.id)}">
         <span class="listing-img"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt="" loading="lazy" decoding="async">${p.images.length > 1 ? `<i>${p.images.length}</i>` : ''}</span>
         <span class="listing-title">${esc(p.title)}</span>
         <span class="listing-price num">${money(p.price)}</span>
-      </button>`).join('')}</div>` : `<div class="groups-none"><b>${self ? 'Nothing listed yet' : 'Nothing listed right now'}</b><span>${self
+        ${p.seller ? `<span class="listing-seller"><span class="pod-avatar xs">${faceHtml(p.seller.name, p.seller.avatar)}</span>${esc(p.seller.username ? `@${p.seller.username}` : p.seller.name)}</span>` : ''}
+      </button>`;
+  const storeGrid = (products, self) => (products.length ? `<div class="store-grid">${products.map(listingTile).join('')}</div>` : `<div class="groups-none"><b>${self ? 'Nothing listed yet' : 'Nothing listed right now'}</b><span>${self
     ? 'List cards or products you’re selling or trading. Buyers add you as a friend and message you — there’s no checkout.'
     : 'Check back later, or add them as a friend and ask what they have.'}</span></div>`);
 
@@ -2198,10 +2155,10 @@
     $('#sheetBody').innerHTML = `
       <div class="profile">
         <div class="profile-head">
-          <span class="pod-avatar lg ${st?.rank ? medal(st.rank) : ''}">${faceHtml(u.name, u.avatar)}</span>
+          <span class="pod-avatar lg">${faceHtml(u.name, u.avatar)}</span>
           <div class="profile-id">
             <h3 id="sheetTitle">${esc(u.name)}</h3>
-            <p class="muted">${[atName(u), st?.rank ? `Rank #${st.rank}` : '', st ? `${st.cards} card${st.cards === 1 ? '' : 's'}` : ''].filter(Boolean).map(esc).join(' · ')}</p>
+            <p class="muted">${[atName(u), st ? `${st.cards} card${st.cards === 1 ? '' : 's'}` : ''].filter(Boolean).map(esc).join(' · ')}</p>
           </div>
           ${st ? `<div class="profile-value"><span class="eyebrow">Collection</span><b class="num">${money(st.value)}</b></div>` : ''}
         </div>
@@ -2379,6 +2336,7 @@
         try {
           await api(`/api/products/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
           toast('Listing deleted');
+          marketChanged();
           openProfile(user.id);
         } catch (e) { toast(e.message || 'Couldn’t delete it — try again'); }
         return;
@@ -2437,7 +2395,7 @@
       }
       paint();
     });
-    $('#lCancel').addEventListener('click', () => (existing ? openListing(existing.id) : openProfile(user.id)));
+    $('#lCancel').addEventListener('click', () => (existing ? openListing(existing.id) : profileCtx?.fromMarket ? closeSheet() : openProfile(user.id)));
     $('#listingForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = $('#lErr');
@@ -2452,7 +2410,8 @@
       btn.textContent = 'Uploading…';
       try {
         const res = await api(existing ? `/api/products/${encodeURIComponent(existing.id)}` : '/api/products', { method: existing ? 'PUT' : 'POST', body });
-        toast(existing ? 'Listing updated' : 'Listed in your store');
+        toast(existing ? 'Listing updated' : 'Listed in your store and the Marketplace');
+        marketChanged();
         profileCtx = { id: user.id };
         openListing(res.product.id, true);
       } catch (ex) {
@@ -2463,16 +2422,82 @@
     });
   }
 
+  /* ---- marketplace: everyone's listings ---- */
+  const market = { q: '', sort: 'new', items: [], total: 0, more: false, loading: false, loaded: false, error: null, req: 0, at: 0 };
+  function openMarket() {
+    // Re-fetch when coming back after a while, so new listings show up.
+    if (!market.loaded || Date.now() - market.at > 60e3) loadMarket(true);
+    else paintMarket();
+  }
+  async function loadMarket(reset) {
+    if (reset) { market.items = []; market.more = false; market.loaded = false; }
+    const req = ++market.req;
+    market.loading = true;
+    market.error = null;
+    paintMarket();
+    try {
+      const res = await api(`/api/products?q=${encodeURIComponent(market.q)}&sort=${market.sort}&offset=${market.items.length}`);
+      if (req !== market.req) return;
+      market.items.push(...res.items);
+      Object.assign(market, { total: res.total, more: res.more, loaded: true, at: Date.now() });
+    } catch (e) {
+      if (req !== market.req) return;
+      market.error = e.message || 'Couldn’t load the marketplace.';
+    }
+    market.loading = false;
+    paintMarket();
+  }
+  function paintMarket() {
+    const n = market.total;
+    $('#mkSub').textContent = !market.loaded ? 'Cards and collectibles listed by PokéFolio collectors'
+      : market.q ? `${n} listing${n === 1 ? '' : 's'} matching “${market.q}”` : `${n} listing${n === 1 ? '' : 's'} from PokéFolio collectors`;
+    const grid = $('#mkGrid');
+    if (market.items.length) grid.innerHTML = market.items.map(listingTile).join('');
+    else if (market.loading) grid.innerHTML = Array.from({ length: 8 }, () => '<div class="listing skel"><span class="listing-img"></span><span class="skel-line"></span><span class="skel-line short"></span></div>').join('');
+    else if (market.loaded) {
+      grid.innerHTML = `<div class="groups-none market-empty">${market.q
+        ? `<b>No listings match “${esc(market.q)}”</b><span>Try fewer or different words — search covers titles, descriptions and sellers.</span>`
+        : '<b>Nothing for sale yet</b><span>Be the first — tap “+ Sell something” to list a card or product.</span>'}</div>`;
+    } else grid.innerHTML = '';
+    $('#mkMore').innerHTML = market.error ? `<p class="note">${esc(market.error)}</p>`
+      : market.more ? (market.loading && market.items.length ? '<div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div>'
+        : `<button class="btn block" id="mkMoreBtn">Load more (${market.items.length} of ${n})</button>`) : '';
+    $('#mkMoreBtn')?.addEventListener('click', () => loadMarket(false));
+  }
+  $('#mkGrid').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-listing]');
+    if (b) openListing(b.dataset.listing);
+  });
+  let mkTimer = null;
+  const runMarketSearch = () => {
+    clearTimeout(mkTimer);
+    const q = $('#mkQuery').value.trim().replace(/\s+/g, ' ');
+    if (q === market.q && market.loaded) return;
+    market.q = q;
+    loadMarket(true);
+  };
+  $('#mkForm').addEventListener('submit', (e) => { e.preventDefault(); runMarketSearch(); $('#mkQuery').blur(); });
+  $('#mkQuery').addEventListener('input', () => { clearTimeout(mkTimer); mkTimer = setTimeout(runMarketSearch, 350); });
+  $('#mkSort').addEventListener('change', (e) => { market.sort = e.target.value; loadMarket(true); });
+  $('#mkSell').addEventListener('click', () => {
+    if (!user) { showAuth(); setAuthMode('signup'); return; }
+    profileCtx = { id: user.id, fromMarket: true };
+    listingForm(null);
+    openSheetShell();
+  });
+  // A listing was posted, edited or deleted: the marketplace refreshes next time it's shown.
+  function marketChanged() {
+    market.at = 0;
+    if ($('#view-market').classList.contains('active')) loadMarket(true);
+  }
+
   /* ---- friends page ---- */
   let friendsData = null;
   let friendReqs = 0, groupsUnread = 0;
   function paintBadges() {
     const set = (id, n) => { const b = $(id); if (!b) return; b.hidden = !n; b.textContent = n > 99 ? '99+' : n; };
     set('#groupsBadge', groupsUnread);
-    set('#moreGroupsBadge', groupsUnread);
     set('#friendsBadge', friendReqs);
-    set('#moreFriendsBadge', friendReqs);
-    set('#moreBadge', groupsUnread + friendReqs);
   }
   async function refreshFriends() {
     if (!user) return;
@@ -2532,7 +2557,7 @@
             ${d.incoming.map((f) => friendRow(f, `<button class="btn primary sm" data-fa="accept" data-id="${esc(f.id)}">Accept</button><button class="btn ghost sm" data-fa="decline" data-id="${esc(f.id)}">Decline</button>`)).join('')}` : ''}
           <h4 class="profile-sub">Friends${d.friends.length ? ` · ${d.friends.length}` : ''}</h4>
           ${d.friends.length ? d.friends.map((f) => friendRow(f, `<button class="btn sm" data-fa="message" data-id="${esc(f.id)}">Message</button>`)).join('')
-    : '<div class="groups-none"><b>No friends yet</b><span>Add collectors by their username, or tap “+ Add friend” on anyone’s profile from the leaderboard.</span></div>'}
+    : '<div class="groups-none"><b>No friends yet</b><span>Add collectors by their username, or tap “+ Add friend” on a seller’s profile in the Marketplace.</span></div>'}
           ${d.outgoing.length ? `<h4 class="profile-sub">Sent requests · ${d.outgoing.length}</h4>
             ${d.outgoing.map((f) => friendRow(f, `<button class="btn ghost sm" data-fa="cancel" data-id="${esc(f.id)}">Cancel</button>`)).join('')}` : ''}
         </div>
@@ -2635,7 +2660,7 @@
     try {
       const res = await api('/api/groups');
       groups = res.groups;
-      // Unread messages: on the Groups tab, and (on phones) on More and inside its menu.
+      // Unread messages: badge on the Messages tab.
       groupsUnread = res.unread;
       paintBadges();
       if ($('#view-groups').classList.contains('active')) renderGroupList();
@@ -2656,7 +2681,7 @@
     if (!user) {
       $('#groupsList').innerHTML = '';
       $('#groupPane').innerHTML = `<div class="group-empty"><div class="reticle small" aria-hidden="true"></div>
-        <h3>Groups need an account</h3><p>Create a free account to start group chats with friends, share your pulls and compete on a group leaderboard.</p>
+        <h3>Messages need an account</h3><p>Create a free account to message friends, start group chats, share your pulls and compete on a group leaderboard.</p>
         <button class="btn primary glow" id="groupsSignup">Create account</button></div>`;
       $('#groupsSignup').addEventListener('click', () => { showAuth(); setAuthMode('signup'); });
       $$('.groups-actions .btn').forEach((b) => { b.disabled = true; });

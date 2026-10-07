@@ -20,6 +20,7 @@ const MAX_PRODUCT_IMAGES = 6;
 const MAX_PRODUCT_IMAGE_BYTES = 1.2 * 1024 * 1024; // six of these still fit in one request
 const MAX_FRIENDS = 500;
 const COLLECTION_PAGE = 60;
+const MARKET_PAGE = 24;
 
 const newId = () => crypto.randomUUID();
 const ID = /^[0-9a-f-]{36}$/;
@@ -257,6 +258,15 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
           'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'",
         });
         res.end(img.data);
+        return true;
+      }
+      // GET /api/products?q=&sort=new|price_asc|price_desc&offset= — the marketplace (everyone's listings)
+      if (parts.length === 2 && method === 'GET') {
+        const words = String(url.searchParams.get('q') || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map((w) => w.slice(0, 40));
+        const sort = ['new', 'price_asc', 'price_desc'].includes(url.searchParams.get('sort')) ? url.searchParams.get('sort') : 'new';
+        const offset = Math.min(10000, Math.max(0, parseInt(url.searchParams.get('offset'), 10) || 0));
+        const { items, total } = await store.searchProducts({ words, sort, offset, limit: MARKET_PAGE });
+        send(res, 200, { total, offset, more: offset + items.length < total, items: items.map((p) => publicProduct(p, p.seller)) });
         return true;
       }
       // GET /api/products/:id

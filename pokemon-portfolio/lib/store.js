@@ -10,6 +10,18 @@
 const fs = require('fs');
 const path = require('path');
 
+// Marketplace orderings (newest first breaks ties).
+const PRODUCT_SORTS = {
+  new: (a, b) => b.createdAt - a.createdAt,
+  price_asc: (a, b) => (a.price ?? Infinity) - (b.price ?? Infinity) || b.createdAt - a.createdAt,
+  price_desc: (a, b) => (b.price ?? -1) - (a.price ?? -1) || b.createdAt - a.createdAt,
+};
+const PRODUCT_ORDER_SQL = {
+  new: 'p.created_at DESC',
+  price_asc: 'p.price ASC NULLS LAST, p.created_at DESC',
+  price_desc: 'p.price DESC NULLS LAST, p.created_at DESC',
+};
+
 // Friendships are stored once per pair, whoever asked first.
 const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
@@ -173,6 +185,17 @@ function fileStore(dir) {
       save();
     },
     async listProducts(userId) { return Object.values(data.products).filter((p) => p.userId === userId).sort((a, b) => b.createdAt - a.createdAt).map((p) => ({ ...p })); },
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24 } = {}) {
+      const rows = Object.values(data.products).map((p) => ({ ...p, seller: data.users[p.userId] })).filter((p) => p.seller).filter((p) => {
+        const hay = `${p.title} ${p.description || ''} ${p.seller.name} ${p.seller.username || ''}`.toLowerCase();
+        return words.every((w) => hay.includes(w));
+      });
+      rows.sort(PRODUCT_SORTS[sort] || PRODUCT_SORTS.new);
+      return {
+        total: rows.length,
+        items: rows.slice(offset, offset + limit).map(({ seller, ...p }) => ({ ...p, seller: { id: seller.id, name: seller.name, username: seller.username || null, avatarAt: seller.avatarAt || null } })),
+      };
+    },
     async addProductImage(img) { data.productImages[img.id] = { productId: img.productId, mime: img.mime, b64: img.data.toString('base64') }; save(); },
     async getProductImage(id) {
       const i = data.productImages[id];
@@ -526,6 +549,26 @@ async function pgStore(url, legacyDir) {
     },
     async deleteProduct(id) { await q('DELETE FROM products WHERE id = $1', [id]); },
     async listProducts(userId) { return (await q('SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC', [userId])).rows.map(toProduct); },
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24 } = {}) {
+      const vals = [];
+      const where = words.map((w) => {
+        vals.push(`%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+        const n = `$${vals.length}`;
+        return `(p.title ILIKE ${n} OR p.description ILIKE ${n} OR u.name ILIKE ${n} OR u.username ILIKE ${n})`;
+      });
+      vals.push(limit, offset);
+      const { rows } = await q(`SELECT p.*, u.name AS s_name, u.username AS s_username, u.avatar_at AS s_avatar_at, COUNT(*) OVER () AS total
+                                FROM products p JOIN users u ON u.id = p.user_id
+                                ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                                ORDER BY ${PRODUCT_ORDER_SQL[sort] || PRODUCT_ORDER_SQL.new}
+                                LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
+      let total = rows.length ? +rows[0].total : 0;
+      if (!rows.length && offset) total = (await store.searchProducts({ words, sort, offset: 0, limit: 1 })).total;
+      return {
+        total,
+        items: rows.map((r) => ({ ...toProduct(r), seller: { id: r.user_id, name: r.s_name, username: r.s_username || null, avatarAt: r.s_avatar_at != null ? +r.s_avatar_at : null } })),
+      };
+    },
     async addProductImage(img) { await q('INSERT INTO product_images (id, product_id, mime, data) VALUES ($1,$2,$3,$4)', [img.id, img.productId, img.mime, img.data]); },
     async getProductImage(id) {
       const r = (await q('SELECT id, product_id, mime, data FROM product_images WHERE id = $1', [id])).rows[0];
