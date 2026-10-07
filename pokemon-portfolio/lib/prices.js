@@ -246,9 +246,67 @@ async function tcgdexMatch(info) {
 function getCard(id) {
   return cached(`card:${id}`, 6 * HOUR, async () => {
     const { source, lang, ref } = parseId(id);
-    if (source === 'tcgdex') return fromTcgdex(await tcgdexFull(ref, lang), lang);
+    if (source === 'tcgdex') {
+      const card = fromTcgdex(await tcgdexFull(ref, lang), lang);
+      if (lang === 'en' && (!card.images?.small || !card.tcgplayer)) await withTcgplayer(card).catch(() => {});
+      return card;
+    }
     return (await ptcgJson(`${POKEMONTCG}/cards/${encodeURIComponent(id)}`)).data;
   });
+}
+
+/* ---------------- TCGplayer catalogue (via tcgcsv.com) ---------------- */
+// Brand-new sets (e.g. 30th Celebration's Classic Collection) are on TCGplayer — with pictures,
+// market prices and the printed card numbers — well before the card databases picture them.
+// tcgcsv.com mirrors TCGplayer's public catalogue daily; Pokémon is category 3.
+const TCGCSV = 'https://tcgcsv.com/tcgplayer/3';
+const TP_IMG = /^https:\/\/tcgplayer-cdn\.tcgplayer\.com\/product\/(\d+)_/;
+const tpGroups = () => cached('tcgcsv:groups', 12 * HOUR, async () => (await getJson(`${TCGCSV}/groups`, {}, 20000)).results || []);
+const tpProducts = (g) => cached(`tcgcsv:products:${g}`, 12 * HOUR, async () => (await getJson(`${TCGCSV}/${g}/products`, {}, 20000)).results || []);
+const tpPrices = (g) => cached(`tcgcsv:prices:${g}`, 6 * HOUR, async () => (await getJson(`${TCGCSV}/${g}/prices`, {}, 20000)).results || []);
+const tpExt = (p, name) => (p.extendedData || []).find((e) => e.name === name)?.value || '';
+// Card name as TCGplayer writes it, minus additions like " - 4/102" or " (Classic Collection)".
+const tpName = (n) => slug(String(n || '').replace(/\s+-\s+[^-]*\d[^-]*$/, '').replace(/\s*\([^)]*\)\s*/g, ' '));
+// The TCGplayer group (set) for our set: all of our set's words in its name, released near it.
+async function tpGroupFor(set) {
+  const ours = words(set?.name);
+  if (!ours.length) return null;
+  const day = Date.parse(String(set.releaseDate || '').replace(/\//g, '-'));
+  let best = null, bestScore = -Infinity;
+  for (const g of await tpGroups()) {
+    const theirs = words(String(g.name || '').replace(/^[A-Z0-9&]{1,6}\d*:\s*/, ''));
+    if (!ours.every((w) => theirs.includes(w))) continue;
+    const gap = day && g.publishedOn ? Math.abs(Date.parse(g.publishedOn) - day) / (24 * HOUR) : 0;
+    if (gap > 90) continue;
+    const score = -(theirs.length - ours.length) - gap / 30;
+    if (score > bestScore) { best = g; bestScore = score; }
+  }
+  return best;
+}
+// Fill a card's missing picture and prices (and its printed number) from TCGplayer.
+async function withTcgplayer(card) {
+  const g = await tpGroupFor(card.set);
+  if (!g) return card;
+  const cards = (await tpProducts(g.groupId)).filter((p) => tpExt(p, 'Number'));
+  const named = cards.filter((p) => tpName(p.name) === slug(card.name));
+  const num = (p) => normNum(tpExt(p, 'Number').split('/')[0]);
+  // Same number, else the only card with that name (subset numbering often differs between sites).
+  const prod = named.find((p) => num(p) === normNum(card.number)) || (named.length === 1 ? named[0] : null);
+  if (!prod) return card;
+  card.printedNumber = tpExt(prod, 'Number');
+  if (!card.images?.small && TP_IMG.test(prod.imageUrl || '')) {
+    const id = prod.imageUrl.match(TP_IMG)[1];
+    card.images = { small: `https://tcgplayer-cdn.tcgplayer.com/product/${id}_in_400x400.jpg`, large: `https://tcgplayer-cdn.tcgplayer.com/product/${id}_in_1000x1000.jpg`, alt: prod.imageUrl };
+  }
+  if (!card.tcgplayer) {
+    const prices = {};
+    for (const r of await tpPrices(g.groupId).catch(() => [])) {
+      if (r.productId !== prod.productId || !r.subTypeName) continue;
+      prices[camel(slug(r.subTypeName))] = { low: r.lowPrice ?? null, mid: r.midPrice ?? null, high: r.highPrice ?? null, market: r.marketPrice ?? null };
+    }
+    if (Object.keys(prices).length) card.tcgplayer = { updatedAt: null, url: prod.url || null, prices };
+  }
+  return card;
 }
 
 function buildQueries({ name, number, total, setCode }) {
@@ -339,6 +397,7 @@ const PC_PAGE_IDS = [
 const PRINTING_WORDS = new Set(['1st', 'edition', 'shadowless', 'unlimited', 'reverse', 'holo', 'cosmos', 'cracked', 'ice',
   'master', 'poke', 'pokeball', 'ball', 'stamped', 'staff', 'prerelease', 'non', 'swirl', 'no', 'symbol', 'red', 'cheeks']);
 
+const SUBSET_WORDS = new Set(['classic', 'collection', 'trainer', 'gallery', 'galarian', 'shiny', 'vault']);
 // Score a PriceCharting product (console slug + product slug) against our card.
 // Returns -1 unless name, number, set and printing all match.
 function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant, japanese = false }, { relaxed = false, anyNumber = false } = {}) {
@@ -359,7 +418,9 @@ function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant
   if (tags.split('-').filter(Boolean).some((w) => !PRINTING_WORDS.has(w))) return -1;
   if (/reverse-holo/.test(tags) !== isReverse(variant)) return -1;
   if (/1st-edition/.test(tags) !== is1st(variant)) return -1;
-  const ours = words(setName);
+  // Subset names ("… Classic Collection", "… Trainer Gallery") are usually listed under the main set.
+  const all = words(setName);
+  const ours = all.filter((w) => !SUBSET_WORDS.has(w)).length ? all.filter((w) => !SUBSET_WORDS.has(w)) : all;
   const theirs = words(consoleSlug);
   const hit = ours.filter((w) => theirs.includes(w)).length;
   if (!relaxed && (!ours.length || hit / ours.length < (anyNumber ? 0.75 : 0.5))) return -1;
@@ -577,7 +638,8 @@ async function englishName(card) {
 /* ---------------- Public API ---------------- */
 function cardInfo(card, variant) {
   return {
-    id: card.id, name: card.name, setName: card.set?.name || '', number: card.number,
+    // A reprint subset is listed under its printed (original) numbers on PriceCharting.
+    id: card.id, name: card.name, setName: card.set?.name || '', number: card.printedNumber ? card.printedNumber.split('/')[0] : card.number,
     total: card.set?.printedTotal, variant: variant || defaultVariant(card),
     // Released in the last year (or undated): its numbering may not match other sites yet.
     recent: !card.set?.releaseDate || Date.now() - Date.parse(String(card.set.releaseDate).replace(/\//g, '-')) < 365 * 24 * HOUR,
@@ -715,6 +777,7 @@ async function imageCandidates(id, size = 'small') {
   const card = await getCard(id).catch(() => null);
   add(card?.images?.[size]);
   add(card?.images?.[other]);
+  add(card?.images?.alt);
   const { source, lang, ref } = parseId(id);
   if (source === 'ptcg') {
     const cut = ref.lastIndexOf('-');

@@ -398,7 +398,7 @@ async function api(req, res, url) {
   throw httpError(404, 'Not found.');
 }
 
-const IMG_HOSTS = new Set(['images.pokemontcg.io', 'assets.tcgdex.net']);
+const IMG_HOSTS = new Set(['images.pokemontcg.io', 'assets.tcgdex.net', 'tcgplayer-cdn.tcgplayer.com']);
 const imgCache = new Map(); // url -> { type, body }
 async function proxyImage(res, raw) {
   let target;

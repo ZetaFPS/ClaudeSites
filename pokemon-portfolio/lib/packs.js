@@ -270,7 +270,10 @@ function createPacks({ catalog, log = console }) {
       for (const [re, rates] of SUBSETS) {
         const m = cs[0].setName.match(re);
         if (!m || !m[1]) continue;
-        const parent = byName.get(norm(m[1]));
+        // "30th Classic Collection" belongs to "30th Celebration": fall back to the set released the
+        // same day whose name starts with the same words.
+        const parent = byName.get(norm(m[1])) || [...groups].find(([pid, pcs]) => pid !== id && pcs[0].released === cs[0].released
+          && norm(pcs[0].setName).startsWith(norm(m[1])) && !re.test(pcs[0].setName))?.[0];
         if (!parent || parent === id || !groups.has(parent)) continue;
         const parentName = groups.get(parent)[0].setName;
         const label = cs[0].setName.slice(m[1].length).replace(/^[\s:\-–]+/, '') || 'Subset';

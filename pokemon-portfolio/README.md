@@ -22,13 +22,16 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   PriceCharting's Japanese listings (looked up by the Pokémon's English name), when it has them.
 - **Card pictures never go missing**: if an image fails to load, the app asks the server, which tries
   every other source for that card — the other size, the Pokémon TCG API's image server, TCGdex (webp,
-  png or jpg) and, last, the card's photo on PriceCharting (which pictures brand-new sets, like the
+  png or jpg), TCGplayer's product photo (via [tcgcsv.com](https://tcgcsv.com)) and, last, the card's photo on PriceCharting (which pictures brand-new sets, like the
   30th Celebration Classic Collection, before the card databases do) — and shows a neat placeholder
   only if none has it.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
   2. TCGplayer market price via [TCGdex](https://tcgdex.dev) for the same card (same set, number and printing)
+     — or, for brand-new sets TCGdex hasn't priced or pictured yet, straight from TCGplayer's public
+     catalogue (via [tcgcsv.com](https://tcgcsv.com)), which also gives the card's printed number
+     (e.g. the 30th Celebration Classic Collection's Charizard is 4/102, the number PriceCharting uses)
   3. PriceCharting "Ungraded" price (strict match: name, number, set and printing must all agree)
   4. Cardmarket (EU) trend price converted from € to $ at the ECB daily rate — marked "≈"
   5. TCGplayer's lowest current listing, as a last resort — marked "≈"
