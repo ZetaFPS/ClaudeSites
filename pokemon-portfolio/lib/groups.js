@@ -56,11 +56,17 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     image: m.imageId ? `/api/groups/${m.groupId}/images/${m.imageId}` : null,
   });
 
+  // A direct message is a two-person chat named after the other person.
+  const isDm = (g) => g.kind === 'dm';
+  const otherOf = (members, user) => members.find((m) => m.userId !== user.id) || null;
+
   async function groupDetails(group, user, member) {
     const members = await store.listMembers(group.id);
+    const other = isDm(group) ? otherOf(members, user) : null;
     return {
-      id: group.id, name: group.name, createdAt: group.createdAt, inviteCode: group.inviteCode,
-      ownerId: group.ownerId, myRole: member.role,
+      id: group.id, name: other ? other.name : group.name, createdAt: group.createdAt, inviteCode: isDm(group) ? null : group.inviteCode,
+      ownerId: group.ownerId, myRole: member.role, kind: group.kind || 'group',
+      other: other ? { id: other.userId, name: other.name, avatar: avatarUrl(other.userId, other.avatarAt) } : null,
       members: members.map((m) => ({ id: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), role: m.role, joinedAt: m.joinedAt, me: m.userId === user.id })),
     };
   }
@@ -71,7 +77,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     const card = await prices.getCard(cardId).catch(() => null);
     if (!card) throw httpError(400, 'Couldn’t find that card.');
     const raw = await prices.rawPrice(cardId, typeof variant === 'string' ? variant.slice(0, 40) : null).catch(() => null);
-    const img = (u) => { try { const x = new URL(u); return /^(images\.pokemontcg\.io|assets\.tcgdex\.net)$/.test(x.hostname) ? x.href : null; } catch { return null; } };
+    const img = (u) => { try { const x = new URL(u); return /^(images\.pokemontcg\.io|assets\.tcgdex\.net|tcgplayer-cdn\.tcgplayer\.com)$/.test(x.hostname) ? x.href : null; } catch { return null; } };
     return {
       id: card.id, name: card.name, set: card.set?.name || '', number: card.number || '',
       image: img(card.images?.small), imageLarge: img(card.images?.large),
@@ -90,9 +96,13 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
 
     // GET /api/groups — my groups, newest activity first
     if (parts.length === 2 && method === 'GET') {
-      const groups = (await store.listUserGroups(user.id)).map((g) => ({
-        id: g.id, name: g.name, role: g.role, memberCount: g.memberCount, unread: g.unread,
-        createdAt: g.createdAt,
+      const rows = await store.listUserGroups(user.id);
+      // Direct messages are named after (and pictured as) the other person.
+      const others = new Map(await Promise.all(rows.filter(isDm).map(async (g) => [g.id, otherOf(await store.listMembers(g.id), user)])));
+      const groups = rows.map((g) => ({
+        id: g.id, name: isDm(g) ? others.get(g.id)?.name || 'Former friend' : g.name, role: g.role, memberCount: g.memberCount, unread: g.unread,
+        createdAt: g.createdAt, kind: g.kind || 'group',
+        other: isDm(g) && others.get(g.id) ? { id: others.get(g.id).userId, avatar: avatarUrl(others.get(g.id).userId, others.get(g.id).avatarAt) } : null,
         last: g.last ? { kind: g.last.kind, body: (g.last.body || '').slice(0, 120), name: g.last.name, createdAt: g.last.createdAt, mine: g.last.userId === user.id } : null,
       })).sort((a, b) => (b.last?.createdAt || b.createdAt) - (a.last?.createdAt || a.createdAt));
       send(res, 200, { groups, unread: groups.reduce((n, g) => n + g.unread, 0) });
@@ -116,7 +126,8 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     if (parts.length === 3 && gid === 'join' && method === 'POST') {
       limitWrite(req);
       const code = String((await readBody(req)).code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const group = code.length === 8 ? await store.getGroupByCode(code) : null;
+      const found = code.length === 8 ? await store.getGroupByCode(code) : null;
+      const group = found && !isDm(found) ? found : null;
       if (!group) throw httpError(404, 'That invite code doesn’t match any group. Check it and try again.');
       const existing = await store.getMember(group.id, user.id);
       if (!existing) {
@@ -132,6 +143,10 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     if (!gid || !/^[0-9a-f-]{36}$/.test(gid)) throw httpError(404, 'Not found.');
     const { group, member, isOwner } = await membership(gid, user);
     const sub = parts[3];
+    // Direct messages have no settings: no renaming, inviting, removing or leaving.
+    if (isDm(group) && ((!sub && method !== 'GET') || ['invite', 'leave', 'members'].includes(sub))) {
+      throw httpError(400, 'Direct messages can’t be changed — unfriend the person instead.');
+    }
 
     // GET /api/groups/:id
     if (!sub && method === 'GET') { send(res, 200, { group: await groupDetails(group, user, member) }); return true; }
@@ -210,6 +225,11 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     // POST /api/groups/:id/messages — { text } | { kind: 'card', cardId, variant, text? } | { kind: 'image', image: dataURL, text? }
     if (sub === 'messages' && !parts[4] && method === 'POST') {
       limitWrite(req);
+      if (isDm(group)) {
+        const other = otherOf(await store.listMembers(gid), user);
+        const f = other && await store.getFriendship(user.id, other.userId);
+        if (f?.status !== 'accepted') throw httpError(403, 'You’re no longer friends, so you can’t send messages here.');
+      }
       const body = await readBody(req);
       const text = typeof body.text === 'string' ? body.text.replace(/\r\n/g, '\n').trim().slice(0, MAX_TEXT) : '';
       const msg = { groupId: gid, userId: user.id, kind: 'text', body: text, createdAt: Date.now() };

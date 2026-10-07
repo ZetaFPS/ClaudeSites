@@ -26,7 +26,10 @@ function createAuth(store) {
   const dummy = hashPassword(crypto.randomBytes(8).toString('hex'));
 
   function publicUser(u) {
-    return { id: u.id, email: u.email, name: u.name, createdAt: u.createdAt, showOnLeaderboard: u.showOnLeaderboard !== false, avatar: avatarUrl(u.id, u.avatarAt) };
+    return {
+      id: u.id, email: u.email, name: u.name, username: u.username || null, bio: u.bio || '', createdAt: u.createdAt,
+      showOnLeaderboard: u.showOnLeaderboard !== false, showCollection: u.showCollection === true, avatar: avatarUrl(u.id, u.avatarAt),
+    };
   }
 
   async function createSession(userId) {
@@ -48,19 +51,22 @@ function createAuth(store) {
     if (token) await store.deleteSession(sha256(token));
   }
 
-  async function signup({ email, password, name }) {
+  async function signup({ email, password, name, username }) {
     email = String(email || '').trim().toLowerCase();
+    username = checkUsername(username);
     name = String(name || '').trim().slice(0, 60);
     password = String(password || '');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) throw httpError(400, 'Enter a valid email address.');
     if (password.length < 8) throw httpError(400, 'Password must be at least 8 characters.');
     if (password.length > 200) throw httpError(400, 'Password is too long.');
     if (await store.getUserByEmail(email)) throw httpError(409, 'An account with that email already exists.');
-    const user = { id: crypto.randomUUID(), email, name: name || email.split('@')[0], passHash: await hashPassword(password), createdAt: Date.now() };
+    if (await store.getUserByUsername(username)) throw httpError(409, 'That username is taken — try another.');
+    const user = { id: crypto.randomUUID(), email, username, name: name || username, passHash: await hashPassword(password), createdAt: Date.now() };
     try {
       await store.createUser(user);
     } catch (e) {
       if (e.code === 'DUPLICATE') throw httpError(409, 'An account with that email already exists.');
+      if (e.code === 'DUPLICATE_USERNAME') throw httpError(409, 'That username is taken — try another.');
       throw e;
     }
     return user;
@@ -80,6 +86,14 @@ function createAuth(store) {
   return { publicUser, createSession, userForToken, destroySession, signup, login };
 }
 
+// Usernames: what friends type to add you. 3–20 letters, numbers, dots or underscores, stored lowercase.
+function checkUsername(raw) {
+  const u = String(raw ?? '').trim().replace(/^@/, '').toLowerCase();
+  if (!/^[a-z0-9._]{3,20}$/.test(u)) throw httpError(400, 'Usernames are 3–20 letters, numbers, dots or underscores.');
+  if (/^[._]|[._]$|\.\./.test(u)) throw httpError(400, 'Usernames can’t start or end with a dot or underscore.');
+  return u;
+}
+
 // Profile picture URL; the version changes with every upload so browsers can cache it forever.
 const avatarUrl = (id, at) => (at ? `/api/avatar/${encodeURIComponent(id)}?v=${at}` : null);
 
@@ -89,4 +103,4 @@ function httpError(status, message) {
   return e;
 }
 
-module.exports = { createAuth, httpError, avatarUrl };
+module.exports = { createAuth, httpError, avatarUrl, checkUsername };

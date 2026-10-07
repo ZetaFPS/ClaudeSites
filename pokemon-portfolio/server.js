@@ -5,10 +5,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { createStore } = require('./lib/store');
-const { createAuth, httpError } = require('./lib/auth');
+const { createAuth, httpError, checkUsername } = require('./lib/auth');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
+const { createSocialApi } = require('./lib/social');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
 const { createCatalog } = require('./lib/catalog');
 const { createPacks } = require('./lib/packs');
@@ -20,7 +21,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, visualIndex, catalog, packs; // set up in start()
+let store, auth, leaderboard, groupsApi, socialApi, visualIndex, catalog, packs; // set up in start()
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -97,6 +98,7 @@ function checkOrigin(req) {
   if (host !== req.headers.host) throw httpError(403, 'Cross-site request blocked.');
 }
 
+const optionalUser = (req) => auth.userForToken(cookies(req)[COOKIE]).catch(() => null);
 async function requireUser(req) {
   const user = await auth.userForToken(cookies(req)[COOKIE]);
   if (!user) throw httpError(401, 'Please sign in.');
@@ -150,12 +152,25 @@ async function api(req, res, url) {
     const body = await readBody(req);
     const fields = {};
     if (typeof body.showOnLeaderboard === 'boolean') fields.showOnLeaderboard = body.showOnLeaderboard;
+    if (typeof body.showCollection === 'boolean') fields.showCollection = body.showCollection;
+    if (typeof body.bio === 'string') fields.bio = body.bio.replace(/\r\n/g, '\n').trim().slice(0, 300);
+    if (body.username != null) {
+      fields.username = checkUsername(body.username);
+      const taken = await store.getUserByUsername(fields.username);
+      if (taken && taken.id !== user.id) throw httpError(409, 'That username is taken — try another.');
+    }
     if (typeof body.name === 'string') {
       const name = body.name.trim().slice(0, 40);
       if (!name) throw httpError(400, 'Display name can’t be empty.');
       fields.name = name;
     }
-    const updated = await store.updateUser(user.id, fields);
+    let updated;
+    try {
+      updated = await store.updateUser(user.id, fields);
+    } catch (e) {
+      if (e.code === 'DUPLICATE_USERNAME') throw httpError(409, 'That username is taken — try another.');
+      throw e;
+    }
     leaderboard.invalidate();
     return send(res, 200, { user: auth.publicUser(updated) });
   }
@@ -387,6 +402,9 @@ async function api(req, res, url) {
     return cardImage(res, im[1], url.searchParams.get('size') === 'large' ? 'large' : 'small');
   }
 
+  // --- profiles, friends, direct messages, stores ---
+  if (/^\/api\/(users|friends|dm|products)(\/|$)/.test(pathname) && await socialApi(req, res, url)) return;
+
   // --- groups: chat, photos, card shares, group leaderboard ---
   if (await groupsApi(req, res, url)) return;
 
@@ -543,6 +561,7 @@ async function start() {
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
+  socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit });
   catalog = createCatalog({ store });
   packs = createPacks({ catalog });
   visualIndex = createVisualIndex({

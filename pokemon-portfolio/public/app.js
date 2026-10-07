@@ -119,6 +119,7 @@
     $$('.auth-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
     $('.auth-tabs').classList.toggle('signup', mode === 'signup');
     $('#nameField').hidden = mode !== 'signup';
+    $('#usernameField').hidden = mode !== 'signup';
     $('#authSubmit').textContent = mode === 'signup' ? 'Create account' : 'Sign in';
     $('#authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
     $('#authError').hidden = true;
@@ -130,9 +131,11 @@
     const err = $('#authError');
     const btn = $('#authSubmit');
     const body = { email: $('#authEmail').value, password: $('#authPassword').value, name: $('#authName').value };
+    if (authMode === 'signup') body.username = $('#authUsername').value.trim().replace(/^@/, '');
     err.hidden = true;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim())) { err.textContent = 'Enter a valid email address.'; err.hidden = false; return; }
     if (body.password.length < 8) { err.textContent = 'Password must be at least 8 characters.'; err.hidden = false; return; }
+    if (authMode === 'signup' && !/^[A-Za-z0-9._]{3,20}$/.test(body.username)) { err.textContent = 'Pick a username: 3–20 letters, numbers, dots or underscores.'; err.hidden = false; return; }
     btn.disabled = true;
     btn.textContent = authMode === 'signup' ? 'Creating account…' : 'Signing in…';
     try {
@@ -177,6 +180,8 @@
     stopChatPolling();
     groups = [];
     openGroup = null;
+    friendsData = null; friendReqs = 0; groupsUnread = 0;
+    paintBadges();
     user = null;
     state = emptyState();
     showAuth(message);
@@ -192,6 +197,7 @@
     hideSplash();
     startListPolling();
     handleInviteLink();
+    setTimeout(promptUsername, 900);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
     else if (state.items.length) recordSnapshot();
   }
@@ -219,7 +225,14 @@
           ${user.avatar ? '<button type="button" class="link-btn muted" id="avatarRemove">Remove</button>' : ''}
         </div>
         <h3 id="sheetTitle">${esc(user.name)}</h3>
-        <p>${esc(user.email)}</p>
+        <p>${user.username ? `<b class="acct-handle">@${esc(user.username)}</b> · ` : ''}${esc(user.email)}</p>
+        <button class="btn block acct-profile-btn" data-prof="${esc(user.id)}">View my profile & store</button>
+        <form class="acct-form glass" id="profileForm" novalidate>
+          <div class="field"><label for="acctUsername">Username</label><input id="acctUsername" autocapitalize="none" spellcheck="false" maxlength="21" placeholder="pick_a_username" value="${esc(user.username || '')}"></div>
+          <div class="field"><label for="acctBio">About you <span class="count" id="bioCount">${(user.bio || '').length}/300</span></label><textarea id="acctBio" rows="3" maxlength="300" placeholder="What you collect, what you’re hunting for, trades you’d consider…">${esc(user.bio || '')}</textarea></div>
+          <p class="auth-error" id="profileErr" role="alert" hidden></p>
+          <button class="btn primary block" id="profileSave">Save profile</button>
+        </form>
         <div class="acct-grid">
           <div class="info"><div class="k">Cards</div><div class="v num">${t.count}</div></div>
           <div class="info"><div class="k">Raw value</div><div class="v num">${money(t.value)}</div></div>
@@ -230,6 +243,10 @@
         <label class="switch-row glass">
           <span><b>Show me on the leaderboard</b><small>Shows your display name, total value and top 5 cards. Never your email.</small></span>
           <input type="checkbox" id="lbToggle" ${user.showOnLeaderboard !== false ? 'checked' : ''}><i aria-hidden="true"></i>
+        </label>
+        <label class="switch-row glass">
+          <span><b>Show my whole collection</b><small>Anyone viewing your profile can browse every card you own, not just your top 5.</small></span>
+          <input type="checkbox" id="collToggle" ${user.showCollection ? 'checked' : ''}><i aria-hidden="true"></i>
         </label>
         <div class="actions"><button class="btn danger block" id="logoutBtn">Sign out</button></div>
       </div>` : `
@@ -261,6 +278,34 @@
       } catch {
         e.currentTarget.checked = !on;
         toast('Couldn’t save — try again');
+      }
+    });
+    $('#collToggle')?.addEventListener('change', async (e) => {
+      const on = e.currentTarget.checked;
+      try {
+        user = (await api('/api/account', { method: 'PUT', body: { showCollection: on } })).user;
+        toast(on ? 'Your whole collection is visible on your profile' : 'Only your top cards are shown now');
+      } catch {
+        e.currentTarget.checked = !on;
+        toast('Couldn’t save — try again');
+      }
+    });
+    $('#acctBio')?.addEventListener('input', (e) => { $('#bioCount').textContent = `${e.target.value.length}/300`; });
+    $('#profileForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('#profileErr');
+      err.hidden = true;
+      const body = { bio: $('#acctBio').value };
+      const handle = $('#acctUsername').value.trim().replace(/^@/, '');
+      if (handle && handle !== user.username) body.username = handle;
+      try {
+        user = (await api('/api/account', { method: 'PUT', body })).user;
+        toast('Profile saved');
+        lbData = null;
+        openAccount();
+      } catch (ex) {
+        err.textContent = ex.status ? ex.message : 'Couldn’t reach the server.';
+        err.hidden = false;
       }
     });
     $('#avatarInput')?.addEventListener('change', async (e) => {
@@ -449,7 +494,7 @@
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.goto === view && ('focusSearch' in t.dataset) === focusSearch));
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
     // On phones, Leaders/Groups/Grade/Search live under "More": highlight it when one is open.
-    $('#moreBtn').classList.toggle('active', ['leaders', 'groups', 'grade'].includes(view) || (view === 'scan' && focusSearch));
+    $('#moreBtn').classList.toggle('active', ['leaders', 'groups', 'friends', 'grade'].includes(view) || (view === 'scan' && focusSearch));
     $$('#moreMenu [data-goto]').forEach((b) => b.classList.toggle('active', b.dataset.goto === view && ('focusSearch' in b.dataset) === focusSearch));
     closeMore();
     if (view !== 'scan' || focusSearch) stopCamera();
@@ -463,6 +508,7 @@
     if (view === 'leaders') loadLeaderboard();
     if (view === 'grade') prepareGrader();
     if (view === 'groups') loadGroups();
+    if (view === 'friends') loadFriends();
     else stopChatPolling();
     if (focusSearch) setTimeout(() => $('#searchInput').focus(), 50);
     window.scrollTo({ top: 0 });
@@ -2102,43 +2148,458 @@
       </button>`).join('');
   }
 
-  function openProfile(id, entries = lbData?.entries) {
-    const e = entries?.find((x) => x.id === id);
-    if (!e) return;
+  /* ================= Profiles, friends & stores ================= */
+  const atName = (u) => (u?.username ? `@${u.username}` : '');
+  const loaderHtml = (cls = 'profile') => `<div class="${cls}"><div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div></div>`;
+  let profileCtx = null; // { id, data, coll }
+
+  async function openProfile(id) {
+    profileCtx = { id, data: null, coll: null };
+    $('#sheetBody').innerHTML = loaderHtml();
+    openSheetShell();
+    try {
+      const data = await api(`/api/users/${encodeURIComponent(id)}`);
+      if (profileCtx?.id !== id) return;
+      profileCtx.data = data;
+      renderProfile();
+    } catch (e) {
+      if (profileCtx?.id === id) $('#sheetBody').innerHTML = `<div class="profile"><p class="note">${esc(e.message || 'Couldn’t load that profile.')}</p></div>`;
+    }
+  }
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-lb], [data-prof]');
+    if (b) openProfile(b.dataset.lb || b.dataset.prof);
+  });
+
+  function relationButtons(rel) {
+    if (!user) return '<button class="btn primary" data-pa="signin">Sign in to add friends</button>';
+    switch (rel) {
+      case 'self': return '<button class="btn" data-pa="edit">Edit profile</button>';
+      case 'friends': return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn ghost" data-pa="unfriend">Friends ✓</button>';
+      case 'outgoing': return '<button class="btn" data-pa="cancel">Request sent · Cancel</button>';
+      case 'incoming': return '<button class="btn primary glow" data-pa="accept">Accept friend request</button><button class="btn ghost" data-pa="decline">Decline</button>';
+      default: return '<button class="btn primary glow" data-pa="add">+ Add friend</button>';
+    }
+  }
+  const storeGrid = (products, self) => (products.length ? `<div class="store-grid">${products.map((p) => `
+      <button class="listing" data-listing="${esc(p.id)}">
+        <span class="listing-img"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt="" loading="lazy" decoding="async">${p.images.length > 1 ? `<i>${p.images.length}</i>` : ''}</span>
+        <span class="listing-title">${esc(p.title)}</span>
+        <span class="listing-price num">${money(p.price)}</span>
+      </button>`).join('')}</div>` : `<div class="groups-none"><b>${self ? 'Nothing listed yet' : 'Nothing listed right now'}</b><span>${self
+    ? 'List cards or products you’re selling or trading. Buyers add you as a friend and message you — there’s no checkout.'
+    : 'Check back later, or add them as a friend and ask what they have.'}</span></div>`);
+
+  function renderProfile() {
+    const { data } = profileCtx;
+    const u = data.user, st = data.stats, self = data.relation === 'self';
+    const canSeeAll = self || data.showCollection;
+    const top = st?.top || [];
     $('#sheetBody').innerHTML = `
       <div class="profile">
         <div class="profile-head">
-          <span class="pod-avatar lg ${medal(e.rank)}">${faceHtml(e.name, e.avatar)}</span>
-          <div>
-            <h3 id="sheetTitle">${esc(e.name)}</h3>
-            <p class="muted">Rank #${e.rank} · ${e.cards} card${e.cards === 1 ? '' : 's'}</p>
+          <span class="pod-avatar lg ${st?.rank ? medal(st.rank) : ''}">${faceHtml(u.name, u.avatar)}</span>
+          <div class="profile-id">
+            <h3 id="sheetTitle">${esc(u.name)}</h3>
+            <p class="muted">${[atName(u), st?.rank ? `Rank #${st.rank}` : '', st ? `${st.cards} card${st.cards === 1 ? '' : 's'}` : ''].filter(Boolean).map(esc).join(' · ')}</p>
           </div>
-          <div class="profile-value"><span class="eyebrow">Collection</span><b class="num">${money(e.value)}</b></div>
+          ${st ? `<div class="profile-value"><span class="eyebrow">Collection</span><b class="num">${money(st.value)}</b></div>` : ''}
         </div>
-        <h4 class="profile-sub">Top ${Math.min(5, e.top.length)} card${e.top.length === 1 ? '' : 's'}</h4>
-        <div class="profile-cards">
-          ${e.top.map((t, i) => `
-            <button class="pcard" data-card="${esc(t.id)}">
+        ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : self ? '<p class="profile-bio empty">Add a short description so collectors know what you collect and what you’re after.</p>' : ''}
+        <div class="profile-actions">${relationButtons(data.relation)}</div>
+        ${top.length ? `<h4 class="profile-sub">Top ${top.length} card${top.length === 1 ? '' : 's'}</h4>
+        <div class="profile-cards">${top.map((t, i) => `
+            <button class="pcard" data-pcard="${esc(t.id)}">
               <span class="pcard-rank">${i + 1}</span>
               <img ${imgAttrs({ id: t.id, images: { small: t.image } })} alt="" loading="lazy">
               <span class="name">${esc(t.name)}</span>
               <span class="sub">${esc(t.set)}${t.number ? ` · #${esc(t.number)}` : ''}</span>
               <span class="p num">${money(t.price)}${t.qty > 1 ? ` <small>×${t.qty}</small>` : ''}</span>
-            </button>`).join('')}
+            </button>`).join('')}</div>` : ''}
+        <h4 class="profile-sub">Full collection</h4>
+        <div id="profColl">${canSeeAll
+    ? `<button class="btn block" id="showColl">${st?.cards ? `View all ${st.cards} card${st.cards === 1 ? '' : 's'}` : 'View collection'}</button>${self && !data.showCollection ? '<p class="note">Only you can see this. Turn on “Show my whole collection” in your account to share it.</p>' : ''}`
+    : `<div class="locked glass"><span class="lock" aria-hidden="true">🔒</span><span><b>This collection is private</b><small>${esc(u.name)} shares ${top.length ? 'only their top cards' : 'no cards'}.</small></span></div>`}</div>
+        <div class="store-head"><h4 class="profile-sub">Store${data.products.length ? ` · ${data.products.length}` : ''}</h4>${self ? '<button class="btn primary sm" id="newListing">+ List an item</button>' : ''}</div>
+        ${storeGrid(data.products, self)}
+      </div>`;
+    $$('[data-pcard]').forEach((b) => b.addEventListener('click', () => openCardById(b.dataset.pcard)));
+    $$('[data-pa]').forEach((b) => b.addEventListener('click', () => profileAction(b.dataset.pa, b)));
+    $$('[data-listing]').forEach((b) => b.addEventListener('click', () => openListing(b.dataset.listing, true)));
+    $('#newListing')?.addEventListener('click', () => listingForm(null));
+    $('#showColl')?.addEventListener('click', () => loadProfileCollection(true));
+  }
+
+  async function openCardById(id) {
+    try {
+      const { card } = await api(`/api/card/${encodeURIComponent(id)}`);
+      if (card) openCard({ card });
+    } catch { toast('Couldn’t load that card'); }
+  }
+
+  // The whole collection, most valuable first, 60 cards at a time.
+  async function loadProfileCollection(reset) {
+    const ctx = profileCtx;
+    if (!ctx) return;
+    if (reset) ctx.coll = { items: [], more: true, loading: false };
+    const c = ctx.coll;
+    if (c.loading || !c.more) return;
+    c.loading = true;
+    paintProfileCollection();
+    try {
+      const res = await api(`/api/users/${encodeURIComponent(ctx.id)}/collection?offset=${c.items.length}`);
+      if (profileCtx !== ctx) return;
+      c.items.push(...res.items);
+      c.total = res.total;
+      c.more = res.more;
+    } catch (e) {
+      c.error = e.message || 'Couldn’t load the collection.';
+      c.more = false;
+    }
+    c.loading = false;
+    paintProfileCollection();
+  }
+  function paintProfileCollection() {
+    const c = profileCtx?.coll, box = $('#profColl');
+    if (!c || !box) return;
+    box.innerHTML = `
+      ${c.items.length ? `<div class="profile-cards coll">${c.items.map((t) => `
+        <button class="pcard" data-pcard="${esc(t.id)}">
+          <img ${imgAttrs({ id: t.id, images: { small: t.image } })} alt="" loading="lazy">
+          <span class="name">${esc(t.name)}</span>
+          <span class="sub">${esc(t.set)}${t.number ? ` · #${esc(t.number)}` : ''}</span>
+          <span class="p num">${money(t.price)}${t.qty > 1 ? ` <small>×${t.qty}</small>` : ''}</span>
+        </button>`).join('')}</div>` : ''}
+      ${!c.loading && !c.items.length && !c.error ? '<p class="note">No cards yet — collections update a minute or so after cards are added.</p>' : ''}
+      ${c.error ? `<p class="note">${esc(c.error)}</p>` : ''}
+      ${c.loading ? '<div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div>' : c.more ? `<button class="btn block" id="collMore">Load more (${c.items.length} of ${c.total})</button>` : ''}`;
+    $$('[data-pcard]', box).forEach((b) => b.addEventListener('click', () => openCardById(b.dataset.pcard)));
+    $('#collMore')?.addEventListener('click', () => loadProfileCollection(false));
+  }
+
+  async function profileAction(act, btn) {
+    const ctx = profileCtx;
+    const id = ctx?.id;
+    if (!id) return;
+    if (act === 'signin') { closeSheet(); showAuth(); setAuthMode('login'); return; }
+    if (act === 'edit') { openAccount(); return; }
+    if (act === 'message') { openDm(id); return; }
+    if (act === 'unfriend' && !confirm(`Remove ${ctx.data.user.name} from your friends?`)) return;
+    btn.disabled = true;
+    try {
+      const status = await friendAction(act, id);
+      if (profileCtx !== ctx) return;
+      ctx.data.relation = status === 'friends' ? 'friends' : status === 'outgoing' ? 'outgoing' : 'none';
+      renderProfile();
+    } catch (e) {
+      btn.disabled = false;
+      toast(e.message || 'Couldn’t do that — try again');
+    }
+  }
+  // add | accept | decline | cancel | unfriend → the new relation
+  async function friendAction(act, id) {
+    let res;
+    if (act === 'add') res = await api('/api/friends', { method: 'POST', body: { userId: id } });
+    else if (act === 'accept') res = await api(`/api/friends/${encodeURIComponent(id)}/accept`, { method: 'POST', body: {} });
+    else res = await api(`/api/friends/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    toast({ add: res.status === 'friends' ? 'You’re now friends' : 'Friend request sent', accept: 'You’re now friends', decline: 'Request declined', cancel: 'Request cancelled', unfriend: 'Removed from friends' }[act]);
+    friendsData = null;
+    refreshFriends();
+    return res.status;
+  }
+
+  // Open (or start) the direct chat with a friend, optionally with a message ready to send.
+  async function openDm(uid, draft = '') {
+    try {
+      const { groupId } = await api(`/api/dm/${encodeURIComponent(uid)}`, { method: 'POST', body: {} });
+      closeSheet();
+      go('groups');
+      await openGroupById(groupId);
+      if (openGroup?.id === groupId && draft) {
+        openGroup.draft = draft;
+        if (openGroup.tab === 'chat') renderChat();
+      }
+    } catch (e) {
+      toast(e.message || 'Couldn’t open the chat');
+    }
+  }
+
+  /* ---- store listings ---- */
+  async function openListing(id, fromProfile = false) {
+    const backTo = fromProfile && profileCtx ? profileCtx.id : null;
+    $('#sheetBody').innerHTML = loaderHtml('listing-view');
+    openSheetShell();
+    let res;
+    try {
+      res = await api(`/api/products/${encodeURIComponent(id)}`);
+    } catch (e) {
+      $('#sheetBody').innerHTML = `<div class="listing-view"><p class="note">${esc(e.message || 'Couldn’t load that listing.')}</p></div>`;
+      return;
+    }
+    const { product: p, relation } = res;
+    const s = p.seller;
+    const own = relation === 'self';
+    const contact = !user ? '<button class="btn primary block" data-la="signin">Sign in to contact the seller</button>'
+      : own ? '<div class="listing-own"><button class="btn primary" data-la="edit">Edit listing</button><button class="btn danger" data-la="delete">Delete</button></div>'
+        : relation === 'friends' ? '<button class="btn primary glow block" data-la="message">Message seller</button>'
+          : relation === 'outgoing' ? '<button class="btn block" disabled>Friend request sent — you can message once they accept</button>'
+            : relation === 'incoming' ? '<button class="btn primary glow block" data-la="accept">Accept their friend request to message</button>'
+              : '<button class="btn primary glow block" data-la="add">+ Add seller as a friend to message them</button>';
+    $('#sheetBody').innerHTML = `
+      <div class="listing-view">
+        ${backTo ? '<button class="link-btn back-link" data-la="back">← Back to profile</button>' : ''}
+        <div class="gallery-wrap">
+          <div class="gallery" id="gallery">${p.images.map((src, i) => `<button class="gallery-img" data-img="${esc(src)}"><img src="${esc(src)}" alt="${esc(p.title)} — picture ${i + 1}" ${i ? 'loading="lazy"' : ''}></button>`).join('')}</div>
+          ${p.images.length > 1 ? `<div class="gallery-dots" id="galleryDots">${p.images.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('')}</div>` : ''}
+        </div>
+        <div class="listing-info">
+          <h3 id="sheetTitle">${esc(p.title)}</h3>
+          <b class="listing-price lg num">${money(p.price)}</b>
+          ${p.description ? `<p class="listing-desc">${esc(p.description)}</p>` : ''}
+          <p class="muted">Listed ${esc(timeAgo(p.createdAt))}${p.updatedAt - p.createdAt > 60e3 ? ` · updated ${esc(timeAgo(p.updatedAt))}` : ''}</p>
+          <button class="seller glass" data-prof="${esc(s.id)}"><span class="pod-avatar sm">${faceHtml(s.name, s.avatar)}</span><span class="lb-name">${esc(s.name)}<small>${esc(atName(s) || 'View profile')}</small></span><span aria-hidden="true">›</span></button>
+          <div class="listing-contact">${contact}</div>
+          <p class="note">PokéFolio doesn’t handle payments or shipping. Agree the details with the seller in chat, and only pay in ways you trust.</p>
         </div>
       </div>`;
-    openSheetShell();
-    $$('.pcard').forEach((b) => b.addEventListener('click', async () => {
-      try {
-        const { card } = await api(`/api/card/${encodeURIComponent(b.dataset.card)}`);
-        if (card) openCard({ card });
-      } catch { toast('Couldn’t load that card'); }
+    const gal = $('#gallery');
+    gal.addEventListener('scroll', () => {
+      const i = Math.round(gal.scrollLeft / gal.clientWidth);
+      $$('#galleryDots i').forEach((d, k) => d.classList.toggle('on', k === i));
+    }, { passive: true });
+    $$('.gallery-img').forEach((b) => b.addEventListener('click', () => openLightbox(b.dataset.img)));
+    $$('[data-la]').forEach((b) => b.addEventListener('click', async () => {
+      const act = b.dataset.la;
+      if (act === 'back') return openProfile(backTo);
+      if (act === 'signin') { closeSheet(); showAuth(); setAuthMode('login'); return; }
+      if (act === 'message') return openDm(s.id, `Hi! Is your “${p.title}” (${money(p.price)}) still available?`);
+      if (act === 'edit') return listingForm(p);
+      if (act === 'delete') {
+        if (!confirm(`Delete “${p.title}” from your store?`)) return;
+        try {
+          await api(`/api/products/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+          toast('Listing deleted');
+          openProfile(user.id);
+        } catch (e) { toast(e.message || 'Couldn’t delete it — try again'); }
+        return;
+      }
+      if (act === 'add' || act === 'accept') {
+        b.disabled = true;
+        try { await friendAction(act, s.id); openListing(p.id, !!backTo); } catch (e) { b.disabled = false; toast(e.message || 'Couldn’t do that — try again'); }
+      }
     }));
   }
+  // Re-open a listing from anywhere (e.g. a chat link).
   document.addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-lb]');
-    if (b) openProfile(b.dataset.lb);
+    const b = ev.target.closest('[data-open-listing]');
+    if (b) openListing(b.dataset.openListing);
   });
+
+  // Create (existing = null) or edit a listing.
+  function listingForm(existing) {
+    const MAX = 6;
+    const pics = existing ? existing.images.map((src) => ({ id: src.split('/').pop(), src })) : [];
+    $('#sheetBody').innerHTML = `
+      <form class="listing-form" id="listingForm" novalidate>
+        <h3 id="sheetTitle">${existing ? 'Edit listing' : 'List an item'}</h3>
+        <p class="muted">Shown in the store on your profile. There’s no checkout — interested collectors add you as a friend and message you.</p>
+        <div class="field"><label>Pictures <span class="count" id="picCount"></span></label><div class="pic-row" id="picRow"></div>
+          <input type="file" id="picInput" accept="image/*" multiple hidden></div>
+        <div class="field"><label for="lTitle">Title</label><input id="lTitle" maxlength="80" required placeholder="e.g. Base Set Charizard — PSA 9" value="${esc(existing?.title || '')}"></div>
+        <div class="field"><label for="lPrice">Price (USD)</label><input id="lPrice" type="number" inputmode="decimal" min="0" step="0.01" required placeholder="0.00" value="${existing?.price ?? ''}"></div>
+        <div class="field"><label for="lDesc">Description</label><textarea id="lDesc" rows="5" maxlength="2000" placeholder="Condition, edition, grading, shipping or meet-up, trades you'd consider…">${esc(existing?.description || '')}</textarea></div>
+        <p class="auth-error" id="lErr" role="alert" hidden></p>
+        <div class="listing-own">
+          <button type="button" class="btn ghost" id="lCancel">Cancel</button>
+          <button class="btn primary glow" id="lSave">${existing ? 'Save changes' : 'Post listing'}</button>
+        </div>
+      </form>`;
+    const paint = () => {
+      $('#picRow').innerHTML = pics.map((p, i) => `
+        <span class="pic">${i === 0 ? '<em>Cover</em>' : ''}<img src="${esc(p.src)}" alt="">
+          <button type="button" class="pic-x" data-rm="${i}" aria-label="Remove picture">×</button>
+          ${i ? `<button type="button" class="pic-first" data-cover="${i}" aria-label="Make cover picture">★</button>` : ''}</span>`).join('')
+        + (pics.length < MAX ? '<button type="button" class="pic add" id="picAdd"><b>+</b><small>Add photo</small></button>' : '');
+      $('#picCount').textContent = `${pics.length}/${MAX}`;
+      $('#picAdd')?.addEventListener('click', () => $('#picInput').click());
+      $$('[data-rm]').forEach((b) => b.addEventListener('click', () => { pics.splice(+b.dataset.rm, 1); paint(); }));
+      $$('[data-cover]').forEach((b) => b.addEventListener('click', () => { pics.unshift(...pics.splice(+b.dataset.cover, 1)); paint(); }));
+    };
+    paint();
+    $('#picInput').addEventListener('change', async (e) => {
+      const files = [...(e.target.files || [])].slice(0, MAX - pics.length);
+      e.target.value = '';
+      for (const f of files) {
+        try {
+          const data = await shrinkPhoto(f, 1400);
+          pics.push({ data, src: data });
+        } catch { toast('Couldn’t read one of those photos'); }
+      }
+      paint();
+    });
+    $('#lCancel').addEventListener('click', () => (existing ? openListing(existing.id) : openProfile(user.id)));
+    $('#listingForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('#lErr');
+      const body = { title: $('#lTitle').value.trim(), price: $('#lPrice').value, description: $('#lDesc').value, images: pics.map((p) => p.data || p.id) };
+      const fail = (m) => { err.textContent = m; err.hidden = false; };
+      err.hidden = true;
+      if (!pics.length) return fail('Add at least one picture.');
+      if (!body.title) return fail('Give your listing a title.');
+      if (body.price === '' || !(+body.price >= 0)) return fail('Enter a price (0 or more).');
+      const btn = $('#lSave');
+      btn.disabled = true;
+      btn.textContent = 'Uploading…';
+      try {
+        const res = await api(existing ? `/api/products/${encodeURIComponent(existing.id)}` : '/api/products', { method: existing ? 'PUT' : 'POST', body });
+        toast(existing ? 'Listing updated' : 'Listed in your store');
+        profileCtx = { id: user.id };
+        openListing(res.product.id, true);
+      } catch (ex) {
+        fail(ex.status ? ex.message : 'Couldn’t reach the server — try again.');
+        btn.disabled = false;
+        btn.textContent = existing ? 'Save changes' : 'Post listing';
+      }
+    });
+  }
+
+  /* ---- friends page ---- */
+  let friendsData = null;
+  let friendReqs = 0, groupsUnread = 0;
+  function paintBadges() {
+    const set = (id, n) => { const b = $(id); if (!b) return; b.hidden = !n; b.textContent = n > 99 ? '99+' : n; };
+    set('#groupsBadge', groupsUnread);
+    set('#moreGroupsBadge', groupsUnread);
+    set('#friendsBadge', friendReqs);
+    set('#moreFriendsBadge', friendReqs);
+    set('#moreBadge', groupsUnread + friendReqs);
+  }
+  async function refreshFriends() {
+    if (!user) return;
+    try {
+      const before = JSON.stringify(friendsData);
+      friendsData = await api('/api/friends');
+      friendReqs = friendsData.incoming.length;
+      paintBadges();
+      // Redraw only when something changed, so a poll never interrupts typing.
+      if ($('#view-friends').classList.contains('active') && (JSON.stringify(friendsData) !== before || !$('#addFriend'))) renderFriends();
+    } catch { /* next poll */ }
+  }
+  async function loadFriends() {
+    const w = $('#friendsWrap');
+    if (!user) {
+      w.innerHTML = `<div class="group-empty"><div class="reticle small" aria-hidden="true"></div>
+        <h3>Friends need an account</h3><p>Create a free account to add friends, message them and open your own store.</p>
+        <button class="btn primary glow" id="friendsSignup">Create account</button></div>`;
+      $('#friendsSignup').addEventListener('click', () => { showAuth(); setAuthMode('signup'); });
+      return;
+    }
+    if (friendsData) renderFriends();
+    else w.innerHTML = Array.from({ length: 3 }, () => '<div class="lb-row skeleton-row"></div>').join('');
+    await refreshFriends();
+    if (!friendsData) w.innerHTML = '<p class="note">Couldn’t load your friends. Try again shortly.</p>';
+  }
+  const friendRow = (f, buttons) => `
+    <div class="friend-row glass">
+      <button class="friend-open" data-prof="${esc(f.id)}"><span class="pod-avatar sm">${faceHtml(f.name, f.avatar)}</span><span class="lb-name">${esc(f.name)}<small>${esc(atName(f))}</small></span></button>
+      <span class="friend-btns">${buttons}</span>
+    </div>`;
+  function renderFriends() {
+    const d = friendsData;
+    if (!d || !user) return;
+    // Keep anything typed (and the focus) across redraws.
+    const typed = { friendName: $('#friendName')?.value || '', pickHandleInput: $('#pickHandleInput')?.value || '' };
+    const focused = document.activeElement?.id;
+    $('#friendsWrap').innerHTML = `
+      <div class="friends-grid">
+        <div class="friends-side">
+          <div class="me-card glass">
+            ${user.username ? `<span class="eyebrow">Your username</span>
+              <div class="me-handle"><b>@${esc(user.username)}</b><button class="btn sm" id="copyHandle">Copy</button></div>
+              <small>Share it so friends can add you.</small>` : `<span class="eyebrow">Pick a username</span>
+              <small>Friends add you by username — choose one to get started.</small>
+              <form class="add-row" id="pickHandle"><span class="at">@</span><input id="pickHandleInput" placeholder="your_name" autocapitalize="none" spellcheck="false" maxlength="21"><button class="btn primary">Save</button></form>`}
+            <button class="link-btn" data-prof="${esc(user.id)}">View my profile & store →</button>
+          </div>
+          <form class="add-friend glass" id="addFriend" autocomplete="off">
+            <label class="eyebrow" for="friendName">Add a friend</label>
+            <div class="add-row"><span class="at">@</span><input id="friendName" placeholder="username" autocapitalize="none" spellcheck="false" maxlength="21"><button class="btn primary">Add</button></div>
+            <p class="auth-error" id="friendErr" role="alert" hidden></p>
+          </form>
+        </div>
+        <div class="friends-main">
+          ${d.incoming.length ? `<h4 class="profile-sub">Friend requests · ${d.incoming.length}</h4>
+            ${d.incoming.map((f) => friendRow(f, `<button class="btn primary sm" data-fa="accept" data-id="${esc(f.id)}">Accept</button><button class="btn ghost sm" data-fa="decline" data-id="${esc(f.id)}">Decline</button>`)).join('')}` : ''}
+          <h4 class="profile-sub">Friends${d.friends.length ? ` · ${d.friends.length}` : ''}</h4>
+          ${d.friends.length ? d.friends.map((f) => friendRow(f, `<button class="btn sm" data-fa="message" data-id="${esc(f.id)}">Message</button>`)).join('')
+    : '<div class="groups-none"><b>No friends yet</b><span>Add collectors by their username, or tap “+ Add friend” on anyone’s profile from the leaderboard.</span></div>'}
+          ${d.outgoing.length ? `<h4 class="profile-sub">Sent requests · ${d.outgoing.length}</h4>
+            ${d.outgoing.map((f) => friendRow(f, `<button class="btn ghost sm" data-fa="cancel" data-id="${esc(f.id)}">Cancel</button>`)).join('')}` : ''}
+        </div>
+      </div>`;
+    for (const [id, v] of Object.entries(typed)) { const el = $(`#${id}`); if (el && v) el.value = v; }
+    if (focused && typed[focused] != null) $(`#${focused}`)?.focus();
+    $('#copyHandle')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(`@${user.username}`); toast('Username copied'); } catch { toast(`Your username is @${user.username}`); }
+    });
+    $('#pickHandle')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        user = (await api('/api/account', { method: 'PUT', body: { username: $('#pickHandleInput').value } })).user;
+        toast(`You’re @${user.username}`);
+        renderFriends();
+      } catch (ex) { toast(ex.message || 'Couldn’t save that username'); }
+    });
+    $('#addFriend').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = $('#friendName'), err = $('#friendErr');
+      const username = input.value.trim().replace(/^@/, '');
+      err.hidden = true;
+      if (!username) return;
+      try {
+        const res = await api('/api/friends', { method: 'POST', body: { username } });
+        input.value = '';
+        toast(res.status === 'friends' ? `You and ${res.user.name} are now friends` : `Friend request sent to ${res.user.name}`);
+        await refreshFriends();
+      } catch (ex) {
+        err.textContent = ex.status ? ex.message : 'Couldn’t reach the server.';
+        err.hidden = false;
+      }
+    });
+    $$('[data-fa]', $('#friendsWrap')).forEach((b) => b.addEventListener('click', async () => {
+      if (b.dataset.fa === 'message') return openDm(b.dataset.id);
+      b.disabled = true;
+      try { await friendAction(b.dataset.fa, b.dataset.id); } catch (e) { b.disabled = false; toast(e.message || 'Couldn’t do that — try again'); }
+    }));
+  }
+
+  // Accounts from before usernames existed: ask once per visit.
+  function promptUsername() {
+    if (!user || user.username || sessionStorage.getItem('pf.askedHandle')) return;
+    try { sessionStorage.setItem('pf.askedHandle', '1'); } catch { /* private mode */ }
+    $('#sheetBody').innerHTML = `
+      <form class="acct handle-prompt" id="handleForm" novalidate>
+        <div class="avatar acct-face">${faceHtml(user.name || user.email, user.avatar)}</div>
+        <h3 id="sheetTitle">Pick a username</h3>
+        <p>PokéFolio now has friends, messages and stores. Friends add you with your username.</p>
+        <div class="field"><label for="handleInput">Username</label><input id="handleInput" autocapitalize="none" spellcheck="false" maxlength="21" placeholder="ash_ketchum"></div>
+        <p class="auth-error" id="handleErr" role="alert" hidden></p>
+        <div class="actions"><button class="btn primary glow block">Save username</button><button type="button" class="btn ghost block" id="handleLater">Later</button></div>
+      </form>`;
+    openSheetShell();
+    $('#handleLater').addEventListener('click', closeSheet);
+    $('#handleForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        user = (await api('/api/account', { method: 'PUT', body: { username: $('#handleInput').value } })).user;
+        closeSheet();
+        toast(`You’re @${user.username}`);
+      } catch (ex) {
+        $('#handleErr').textContent = ex.status ? ex.message : 'Couldn’t reach the server.';
+        $('#handleErr').hidden = false;
+      }
+    });
+  }
 
   /* ================= Groups ================= */
   let groups = [];
@@ -2148,7 +2609,10 @@
 
   // Stable gradient per group name, so each group is recognisable in the list.
   function groupHue(id) { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
-  const gAvatar = (g, cls = '') => `<span class="g-avatar ${cls}" style="--h:${groupHue(g.id)}">${nameInitial(g.name)}</span>`;
+  // Direct messages show the other person's picture; groups a coloured initial.
+  const gAvatar = (g, cls = '') => (g.kind === 'dm'
+    ? `<span class="g-avatar dm ${cls}" style="--h:${groupHue(g.other?.id || g.id)}">${faceHtml(g.name, g.other?.avatar)}</span>`
+    : `<span class="g-avatar ${cls}" style="--h:${groupHue(g.id)}">${nameInitial(g.name)}</span>`);
   const clock = (t) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   function dayLabel(t) {
     const d = new Date(t), now = new Date();
@@ -2172,11 +2636,8 @@
       const res = await api('/api/groups');
       groups = res.groups;
       // Unread messages: on the Groups tab, and (on phones) on More and inside its menu.
-      for (const id of ['#groupsBadge', '#moreBadge', '#moreGroupsBadge']) {
-        const badge = $(id);
-        badge.hidden = !res.unread;
-        badge.textContent = res.unread > 99 ? '99+' : res.unread;
-      }
+      groupsUnread = res.unread;
+      paintBadges();
       if ($('#view-groups').classList.contains('active')) renderGroupList();
     } catch (e) {
       if (e.status === 401) signedOut('Your session expired — please sign in again.');
@@ -2184,7 +2645,11 @@
   }
   function startListPolling() {
     clearInterval(listTimer);
-    if (user) { refreshGroupList(); listTimer = setInterval(() => { if (!document.hidden) refreshGroupList(); }, 25000); }
+    if (user) {
+      refreshGroupList();
+      refreshFriends();
+      listTimer = setInterval(() => { if (!document.hidden) { refreshGroupList(); refreshFriends(); } }, 25000);
+    }
   }
 
   async function loadGroups() {
@@ -2207,7 +2672,7 @@
   function renderGroupList() {
     const list = $('#groupsList');
     if (!groups.length) {
-      list.innerHTML = '<div class="groups-none"><b>No groups yet</b><span>Create one, or join with an invite code from a friend.</span></div>';
+      list.innerHTML = '<div class="groups-none"><b>No chats yet</b><span>Create a group, join one with an invite code, or message a friend from the Friends page.</span></div>';
       return;
     }
     list.innerHTML = groups.map((g) => `
@@ -2219,7 +2684,7 @@
         </span>
         <span class="g-meta">
           <span class="g-time">${g.last ? esc(clock(g.last.createdAt)) : ''}</span>
-          ${g.unread ? `<b class="g-unread">${g.unread > 99 ? '99+' : g.unread}</b>` : `<span class="g-count">${g.memberCount} 👤</span>`}
+          ${g.unread ? `<b class="g-unread">${g.unread > 99 ? '99+' : g.unread}</b>` : g.kind === 'dm' ? '<span class="g-count">Direct</span>' : `<span class="g-count">${g.memberCount} 👤</span>`}
         </span>
       </button>`).join('');
   }
@@ -2260,15 +2725,16 @@
         <button class="icon-btn g-back" id="gBack" aria-label="Back to groups">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
-        ${gAvatar(g)}
-        <div class="g-title"><h3>${esc(g.name)}</h3><small>${g.members.length} member${g.members.length === 1 ? '' : 's'}</small></div>
+        ${g.kind === 'dm' && g.other ? `<button class="g-who" data-prof="${esc(g.other.id)}">${gAvatar(g)}<span class="g-title"><h3>${esc(g.name)}</h3><small>Direct message · view profile</small></span></button>` : `${gAvatar(g)}
+        <div class="g-title"><h3>${esc(g.name)}</h3><small>${g.members.length} member${g.members.length === 1 ? '' : 's'}</small></div>`}
       </div>
-      <div class="g-tabs" role="tablist">
+      ${g.kind === 'dm' ? '' : `<div class="g-tabs" role="tablist">
         ${[['chat', 'Chat'], ['board', 'Leaderboard'], ['members', 'Members']].map(([k, l]) => `<button role="tab" data-gtab="${k}" class="${openGroup.tab === k ? 'active' : ''}">${l}</button>`).join('')}
-      </div>
+      </div>`}
       <div class="g-body" id="gBody"></div>`;
     $('#gBack').addEventListener('click', closeGroup);
     $$('[data-gtab]').forEach((b) => b.addEventListener('click', () => { openGroup.tab = b.dataset.gtab; renderGroupPane(); }));
+    if (g.kind === 'dm') openGroup.tab = 'chat';
     if (openGroup.tab === 'chat') renderChat();
     else stopChatPolling();
     if (openGroup.tab === 'board') renderGroupBoard();
@@ -2302,6 +2768,9 @@
     paintMessages(true);
     const input = $('#chatInput');
     const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(140, input.scrollHeight) + 'px'; };
+    // A message prepared elsewhere (e.g. asking a seller about a listing) waits here until sent.
+    if (openGroup.draft) { input.value = openGroup.draft; requestAnimationFrame(() => { grow(); input.focus(); }); }
+    input.addEventListener('input', () => { if (openGroup) openGroup.draft = ''; });
     input.addEventListener('input', grow);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit(); }
@@ -2330,9 +2799,9 @@
   }
 
   // Phone photos are huge: send at most 1600 px, JPEG.
-  async function shrinkPhoto(file) {
+  async function shrinkPhoto(file, max = 1600) {
     const img = await createImageBitmap(file);
-    const s = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const s = Math.min(1, max / Math.max(img.width, img.height));
     const c = document.createElement('canvas');
     c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
     const x = c.getContext('2d');
@@ -2372,7 +2841,7 @@
       if (openGroup !== g) return;
       g.details = group;
       const t = $('.g-title');
-      if (t) t.innerHTML = `<h3>${esc(group.name)}</h3><small>${group.members.length} member${group.members.length === 1 ? '' : 's'}</small>`;
+      if (t) t.innerHTML = `<h3>${esc(group.name)}</h3><small>${group.kind === 'dm' ? 'Direct message · view profile' : `${group.members.length} member${group.members.length === 1 ? '' : 's'}`}</small>`;
     } catch (e) {
       if (e.status === 403 || e.status === 404) { toast('You’re no longer in this group'); closeGroup(); refreshGroupList(); }
     }
@@ -2486,6 +2955,7 @@
         openGroup.lastSeq = message.seq;
         if (!openGroup.firstSeq) openGroup.firstSeq = message.seq;
       }
+      openGroup.draft = '';
       paintMessages(true);
       refreshGroupList();
       return true;
@@ -2537,7 +3007,7 @@
   }
   document.addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-glb]');
-    if (b && openGroup?.board) openProfile(b.dataset.glb, openGroup.board.entries);
+    if (b && openGroup?.board) openProfile(b.dataset.glb);
   });
 
   /* ---- members & settings ---- */

@@ -10,11 +10,14 @@
 const fs = require('fs');
 const path = require('path');
 
+// Friendships are stored once per pair, whoever asked first.
+const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
 /* ---------------- JSON file ---------------- */
 function fileStore(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'db.json');
-  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, avatars: {}, seq: 0 };
+  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, avatars: {}, friends: {}, products: {}, productImages: {}, seq: 0 };
   try {
     data = { ...data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   } catch (e) {
@@ -35,8 +38,10 @@ function fileStore(dir) {
     kind: `file (${file})`,
     async getUser(id) { return data.users[id] || null; },
     async getUserByEmail(email) { return data.users[data.emails[email]] || null; },
+    async getUserByUsername(username) { return Object.values(data.users).find((u) => u.username === username) || null; },
     async createUser(u) {
       if (data.emails[u.email]) { const e = new Error('duplicate'); e.code = 'DUPLICATE'; throw e; }
+      if (u.username && Object.values(data.users).some((x) => x.username === u.username)) { const e = new Error('duplicate username'); e.code = 'DUPLICATE_USERNAME'; throw e; }
       data.users[u.id] = u; data.emails[u.email] = u.id; save();
     },
     async createSession(hash, s) { data.sessions[hash] = s; save(); },
@@ -52,6 +57,9 @@ function fileStore(dir) {
     async updateUser(id, fields) {
       const u = data.users[id];
       if (!u) return null;
+      if (fields.username && Object.values(data.users).some((x) => x.id !== id && x.username === fields.username)) {
+        const e = new Error('duplicate username'); e.code = 'DUPLICATE_USERNAME'; throw e;
+      }
       Object.assign(u, fields);
       save();
       return u;
@@ -59,7 +67,7 @@ function fileStore(dir) {
     async listPortfolios() {
       return Object.entries(data.portfolios)
         .filter(([uid]) => data.users[uid])
-        .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
+        .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, username: data.users[uid].username || null, avatarAt: data.users[uid].avatarAt || null, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
     },
     // Profile picture: null image removes it. The user's avatarAt changes with every upload.
     async setAvatar(userId, img) {
@@ -79,6 +87,7 @@ function fileStore(dir) {
     async createGroup(g) { data.groups[g.id] = { ...g }; data.members[g.id] = {}; data.messages[g.id] = []; save(); },
     async getGroup(id) { return data.groups[id] || null; },
     async getGroupByCode(code) { return Object.values(data.groups).find((g) => g.inviteCode === code) || null; },
+    async getGroupByDmKey(key) { return Object.values(data.groups).find((g) => g.dmKey === key) || null; },
     async updateGroup(id, fields) { if (data.groups[id]) { Object.assign(data.groups[id], fields); save(); } return data.groups[id] || null; },
     async deleteGroup(id) {
       delete data.groups[id]; delete data.members[id]; delete data.messages[id];
@@ -95,7 +104,7 @@ function fileStore(dir) {
       return Object.entries(data.members[groupId] || {}).filter(([uid]) => data.users[uid])
         .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
     },
-    async countUserGroups(userId) { return Object.values(data.members).filter((m) => m[userId]).length; },
+    async countUserGroups(userId) { return Object.entries(data.members).filter(([gid, m]) => m[userId] && data.groups[gid]?.kind !== 'dm').length; },
     async listUserGroups(userId) {
       const out = [];
       for (const [gid, mem] of Object.entries(data.members)) {
@@ -142,6 +151,34 @@ function fileStore(dir) {
       const i = data.images[id];
       return i ? { id, groupId: i.groupId, mime: i.mime, data: Buffer.from(i.b64, 'base64') } : null;
     },
+
+    // --- friends: one row per pair, { requester, addressee, status: 'pending' | 'accepted' } ---
+    async getFriendship(a, b) { return data.friends[pairKey(a, b)] || null; },
+    async putFriendship(f) { data.friends[pairKey(f.requester, f.addressee)] = { ...f }; save(); },
+    async deleteFriendship(a, b) { if (data.friends[pairKey(a, b)]) { delete data.friends[pairKey(a, b)]; save(); } },
+    async listFriendships(userId) {
+      return Object.values(data.friends).filter((f) => f.requester === userId || f.addressee === userId).map((f) => {
+        const o = data.users[f.requester === userId ? f.addressee : f.requester];
+        return o && { ...f, other: { id: o.id, name: o.name, username: o.username || null, avatarAt: o.avatarAt || null } };
+      }).filter(Boolean);
+    },
+
+    // --- store products (pictures kept separately) ---
+    async createProduct(p) { data.products[p.id] = { ...p }; save(); },
+    async getProduct(id) { return data.products[id] ? { ...data.products[id] } : null; },
+    async updateProduct(id, fields) { if (data.products[id]) { Object.assign(data.products[id], fields); save(); } return data.products[id] || null; },
+    async deleteProduct(id) {
+      delete data.products[id];
+      for (const [k, img] of Object.entries(data.productImages)) if (img.productId === id) delete data.productImages[k];
+      save();
+    },
+    async listProducts(userId) { return Object.values(data.products).filter((p) => p.userId === userId).sort((a, b) => b.createdAt - a.createdAt).map((p) => ({ ...p })); },
+    async addProductImage(img) { data.productImages[img.id] = { productId: img.productId, mime: img.mime, b64: img.data.toString('base64') }; save(); },
+    async getProductImage(id) {
+      const i = data.productImages[id];
+      return i ? { id, productId: i.productId, mime: i.mime, data: Buffer.from(i.b64, 'base64') } : null;
+    },
+    async deleteProductImage(id) { if (data.productImages[id]) { delete data.productImages[id]; save(); } },
 
     // --- visual card index (kept in its own append-only file: it's large and only grows) ---
     async listCardFps() {
@@ -260,6 +297,39 @@ async function pgStore(url, legacyDir) {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS group_messages_group_seq ON group_messages (group_id, seq);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS show_collection BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_username ON users (username) WHERE username IS NOT NULL;
+    ALTER TABLE groups ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'group';
+    ALTER TABLE groups ADD COLUMN IF NOT EXISTS dm_key TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS groups_dm_key ON groups (dm_key) WHERE dm_key IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS friendships (
+      pair_key   TEXT PRIMARY KEY,
+      requester  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      addressee  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status     TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS friendships_requester ON friendships (requester);
+    CREATE INDEX IF NOT EXISTS friendships_addressee ON friendships (addressee);
+    CREATE TABLE IF NOT EXISTS products (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      price       NUMERIC(12,2),
+      description TEXT NOT NULL DEFAULT '',
+      image_ids   JSONB NOT NULL DEFAULT '[]',
+      created_at  BIGINT NOT NULL,
+      updated_at  BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS products_user ON products (user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS product_images (
+      id         TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      mime       TEXT NOT NULL,
+      data       BYTEA NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS kv (
       key        TEXT PRIMARY KEY,
       value      JSONB NOT NULL,
@@ -272,22 +342,33 @@ async function pgStore(url, legacyDir) {
       updated_at BIGINT NOT NULL
     );`);
 
-  const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at };
+  const toGroup = (r) => r && { id: r.id, name: r.name, ownerId: r.owner_id, inviteCode: r.invite_code, createdAt: +r.created_at, kind: r.kind || 'group', dmKey: r.dm_key || null };
+  const toProduct = (r) => r && { id: r.id, userId: r.user_id, title: r.title, price: r.price != null ? +r.price : null, description: r.description, imageIds: r.image_ids || [], createdAt: +r.created_at, updatedAt: +r.updated_at };
+  const toFriendship = (r) => r && { requester: r.requester, addressee: r.addressee, status: r.status, createdAt: +r.created_at };
   const toMessage = (r) => r && {
     seq: +r.seq, groupId: r.group_id, userId: r.user_id, kind: r.kind, body: r.body, imageId: r.image_id, card: r.card,
     createdAt: +r.created_at, name: r.name || 'Former member', avatarAt: r.avatar_at != null ? +r.avatar_at : null,
   };
-  const toUser = (r) => r && { id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false, avatarAt: r.avatar_at != null ? +r.avatar_at : null };
+  const toUser = (r) => r && {
+    id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false,
+    avatarAt: r.avatar_at != null ? +r.avatar_at : null, username: r.username || null, bio: r.bio || '', showCollection: r.show_collection === true,
+  };
+  const dupe = (e) => {
+    if (e.code !== '23505') return e;
+    const d = new Error('duplicate');
+    d.code = /username/.test(e.constraint || e.detail || '') ? 'DUPLICATE_USERNAME' : 'DUPLICATE';
+    return d;
+  };
   const store = {
     kind: 'postgres',
     async getUser(id) { return toUser((await q('SELECT * FROM users WHERE id = $1', [id])).rows[0]); },
     async getUserByEmail(email) { return toUser((await q('SELECT * FROM users WHERE email = $1', [email])).rows[0]); },
+    async getUserByUsername(username) { return toUser((await q('SELECT * FROM users WHERE username = $1', [username])).rows[0]); },
     async createUser(u) {
       try {
-        await q('INSERT INTO users (id, email, name, pass_hash, created_at) VALUES ($1, $2, $3, $4, $5)', [u.id, u.email, u.name, u.passHash, u.createdAt]);
+        await q('INSERT INTO users (id, email, name, pass_hash, created_at, username) VALUES ($1, $2, $3, $4, $5, $6)', [u.id, u.email, u.name, u.passHash, u.createdAt, u.username || null]);
       } catch (e) {
-        if (e.code === '23505') { const d = new Error('duplicate'); d.code = 'DUPLICATE'; throw d; }
-        throw e;
+        throw dupe(e);
       }
     },
     async createSession(hash, s) { await q('INSERT INTO sessions (token_hash, user_id, expires) VALUES ($1, $2, $3)', [hash, s.userId, s.expires]); },
@@ -307,12 +388,18 @@ async function pgStore(url, legacyDir) {
       const sets = [], vals = [];
       if (fields.name != null) { vals.push(fields.name); sets.push(`name = $${vals.length}`); }
       if (fields.showOnLeaderboard != null) { vals.push(!!fields.showOnLeaderboard); sets.push(`show_on_leaderboard = $${vals.length}`); }
-      if (sets.length) { vals.push(id); await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); }
+      if (fields.username != null) { vals.push(fields.username); sets.push(`username = $${vals.length}`); }
+      if (fields.bio != null) { vals.push(fields.bio); sets.push(`bio = $${vals.length}`); }
+      if (fields.showCollection != null) { vals.push(!!fields.showCollection); sets.push(`show_collection = $${vals.length}`); }
+      if (sets.length) {
+        vals.push(id);
+        try { await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); } catch (e) { throw dupe(e); }
+      }
       return store.getUser(id);
     },
     async listPortfolios() {
-      const { rows } = await q(`SELECT u.id, u.name, u.avatar_at, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
-      return rows.map((r) => ({ userId: r.id, name: r.name, avatarAt: r.avatar_at != null ? +r.avatar_at : null, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
+      const { rows } = await q(`SELECT u.id, u.name, u.username, u.avatar_at, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
+      return rows.map((r) => ({ userId: r.id, name: r.name, username: r.username || null, avatarAt: r.avatar_at != null ? +r.avatar_at : null, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
     },
     async setAvatar(userId, img) {
       if (img) {
@@ -332,10 +419,12 @@ async function pgStore(url, legacyDir) {
 
     // --- groups ---
     async createGroup(g) {
-      await q('INSERT INTO groups (id, name, owner_id, invite_code, created_at) VALUES ($1,$2,$3,$4,$5)', [g.id, g.name, g.ownerId, g.inviteCode, g.createdAt]);
+      await q('INSERT INTO groups (id, name, owner_id, invite_code, created_at, kind, dm_key) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [g.id, g.name, g.ownerId, g.inviteCode, g.createdAt, g.kind || 'group', g.dmKey || null]);
     },
     async getGroup(id) { return toGroup((await q('SELECT * FROM groups WHERE id = $1', [id])).rows[0]); },
     async getGroupByCode(code) { return toGroup((await q('SELECT * FROM groups WHERE invite_code = $1', [code])).rows[0]); },
+    async getGroupByDmKey(key) { return toGroup((await q('SELECT * FROM groups WHERE dm_key = $1', [key])).rows[0]); },
     async updateGroup(id, fields) {
       const sets = [], vals = [];
       if (fields.name != null) { vals.push(fields.name); sets.push(`name = $${vals.length}`); }
@@ -357,7 +446,9 @@ async function pgStore(url, legacyDir) {
                                 WHERE m.group_id = $1 ORDER BY m.joined_at`, [groupId]);
       return rows.map((r) => ({ userId: r.user_id, name: r.name, avatarAt: r.avatar_at != null ? +r.avatar_at : null, role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read }));
     },
-    async countUserGroups(userId) { return (await q('SELECT COUNT(*)::int AS n FROM group_members WHERE user_id = $1', [userId])).rows[0].n; },
+    async countUserGroups(userId) {
+      return (await q(`SELECT COUNT(*)::int AS n FROM group_members m JOIN groups g ON g.id = m.group_id WHERE m.user_id = $1 AND g.kind <> 'dm'`, [userId])).rows[0].n;
+    },
     async listUserGroups(userId) {
       const { rows } = await q(`
         SELECT g.*, m.role, m.last_read,
@@ -406,6 +497,41 @@ async function pgStore(url, legacyDir) {
       const r = (await q('SELECT id, group_id, mime, data FROM group_images WHERE id = $1', [id])).rows[0];
       return r ? { id: r.id, groupId: r.group_id, mime: r.mime, data: r.data } : null;
     },
+
+    // --- friends ---
+    async getFriendship(a, b) { return toFriendship((await q('SELECT * FROM friendships WHERE pair_key = $1', [pairKey(a, b)])).rows[0]); },
+    async putFriendship(f) {
+      await q(`INSERT INTO friendships (pair_key, requester, addressee, status, created_at) VALUES ($1,$2,$3,$4,$5)
+               ON CONFLICT (pair_key) DO UPDATE SET requester = EXCLUDED.requester, addressee = EXCLUDED.addressee, status = EXCLUDED.status, created_at = EXCLUDED.created_at`,
+      [pairKey(f.requester, f.addressee), f.requester, f.addressee, f.status, f.createdAt]);
+    },
+    async deleteFriendship(a, b) { await q('DELETE FROM friendships WHERE pair_key = $1', [pairKey(a, b)]); },
+    async listFriendships(userId) {
+      const { rows } = await q(`SELECT f.*, u.id AS o_id, u.name AS o_name, u.username AS o_username, u.avatar_at AS o_avatar_at
+                                FROM friendships f JOIN users u ON u.id = CASE WHEN f.requester = $1 THEN f.addressee ELSE f.requester END
+                                WHERE f.requester = $1 OR f.addressee = $1`, [userId]);
+      return rows.map((r) => ({ ...toFriendship(r), other: { id: r.o_id, name: r.o_name, username: r.o_username || null, avatarAt: r.o_avatar_at != null ? +r.o_avatar_at : null } }));
+    },
+
+    // --- store products ---
+    async createProduct(p) {
+      await q('INSERT INTO products (id, user_id, title, price, description, image_ids, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [p.id, p.userId, p.title, p.price, p.description, JSON.stringify(p.imageIds || []), p.createdAt, p.updatedAt]);
+    },
+    async getProduct(id) { return toProduct((await q('SELECT * FROM products WHERE id = $1', [id])).rows[0]); },
+    async updateProduct(id, f) {
+      await q('UPDATE products SET title = $2, price = $3, description = $4, image_ids = $5, updated_at = $6 WHERE id = $1',
+        [id, f.title, f.price, f.description, JSON.stringify(f.imageIds || []), f.updatedAt]);
+      return store.getProduct(id);
+    },
+    async deleteProduct(id) { await q('DELETE FROM products WHERE id = $1', [id]); },
+    async listProducts(userId) { return (await q('SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC', [userId])).rows.map(toProduct); },
+    async addProductImage(img) { await q('INSERT INTO product_images (id, product_id, mime, data) VALUES ($1,$2,$3,$4)', [img.id, img.productId, img.mime, img.data]); },
+    async getProductImage(id) {
+      const r = (await q('SELECT id, product_id, mime, data FROM product_images WHERE id = $1', [id])).rows[0];
+      return r ? { id: r.id, productId: r.product_id, mime: r.mime, data: r.data } : null;
+    },
+    async deleteProductImage(id) { await q('DELETE FROM product_images WHERE id = $1', [id]); },
 
     // --- visual card index ---
     async listCardFps() {

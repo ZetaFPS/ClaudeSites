@@ -11,7 +11,7 @@ const MAX_ITEMS_PER_USER = 3000;
 const FRESH_MS = 15 * 60e3; // full recompute at most every 15 min…
 const DIRTY_MS = 30e3; // …or 30 s after someone changed their collection
 
-const IMAGE_HOSTS = new Set(['images.pokemontcg.io', 'assets.tcgdex.net']);
+const IMAGE_HOSTS = new Set(['images.pokemontcg.io', 'assets.tcgdex.net', 'tcgplayer-cdn.tcgplayer.com']);
 function safeImage(u) {
   try { const x = new URL(u); return x.protocol === 'https:' && IMAGE_HOSTS.has(x.hostname) ? x.href : null; } catch { return null; }
 }
@@ -29,8 +29,11 @@ function createLeaderboard(store, prices) {
     }));
   }
 
+  // Each collector's priced cards, most valuable first (for profiles that share the full collection).
+  let cardsOf = new Map();
   async function compute() {
     dirty = false;
+    const nextCards = new Map();
     force = false;
     const rows = (await store.listPortfolios()).filter((r) => Array.isArray(r.doc?.items) && r.doc.items.length);
 
@@ -64,9 +67,10 @@ function createLeaderboard(store, prices) {
         byCard.push({ id: it.cardId, variant: it.variant || null, qty, price: unit });
       }
       byCard.sort((a, b) => b.price - a.price);
+      nextCards.set(r.userId, byCard);
       return {
-        id: r.userId, name: r.name, avatar: avatarUrl(r.userId, r.avatarAt), hidden: !r.showOnLeaderboard,
-        value: Math.round(value * 100) / 100, cards, top: byCard.slice(0, 5),
+        id: r.userId, name: r.name, username: r.username || null, avatar: avatarUrl(r.userId, r.avatarAt), hidden: !r.showOnLeaderboard,
+        value: Math.round(value * 100) / 100, cards, top: byCard.slice(0, 5).map((c) => ({ ...c })),
       };
     }).sort((a, b) => b.value - a.value);
 
@@ -83,6 +87,7 @@ function createLeaderboard(store, prices) {
     const visible = entries.filter((e) => !e.hidden);
     visible.forEach((e, i) => { e.rank = i + 1; });
     cache = { computedAt: Date.now(), entries: visible, all: new Map(entries.map((e) => [e.id, e])), total: visible.length };
+    cardsOf = nextCards;
     return cache;
   }
 
@@ -125,7 +130,11 @@ function createLeaderboard(store, prices) {
     return { computedAt: lb.computedAt, total: entries.length, entries };
   }
 
-  return { view, forUsers, markDirty, invalidate };
+  // One collector's entry (hidden or not) and their full priced card list.
+  async function entryFor(userId) { return (await get()).all.get(userId) || null; }
+  async function cardsFor(userId) { await get(); return cardsOf.get(userId) || []; }
+
+  return { view, forUsers, entryFor, cardsFor, markDirty, invalidate };
 }
 
 module.exports = { createLeaderboard };

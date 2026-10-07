@@ -88,6 +88,22 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   members page. The owner can rename the group, reset the invite code, remove members or delete
   it; members can delete their own messages and leave. Only members can read a group or load its
   photos. Messages and photos are stored in the database, so they survive site updates too.
+- **Usernames & profiles** — every account has a unique @username (picked at sign-up; older
+  accounts are asked once). Tap anyone on a leaderboard, in your friends list or in a chat to open
+  their profile: picture, @username, an "About you" description (up to 300 characters, edited under
+  **Account**), collection value and top 5 cards, and their store. **Account → Show my whole
+  collection** lets anyone viewing your profile browse every card you own (most valuable first,
+  60 at a time); it's off by default, and you can always browse your own.
+- **Friends** — add collectors by @username on the **Friends** page (under **More** on phones) or
+  with **+ Add friend** on their profile. They accept or decline; either of you can cancel or
+  unfriend. New requests show a badge on the Friends tab.
+- **Direct messages** — friends can message each other one-to-one (**Message** on a profile or in
+  the friends list). Direct chats appear with your groups and work the same way (text, photos,
+  card shares), but only between people who are still friends.
+- **Stores** — list things you're selling or trading on your profile: up to 6 pictures (resized
+  on your device), a title, a price and a description; edit or delete them any time (up to 60
+  listings). There's no checkout: a buyer adds you as a friend and taps **Message seller**, which
+  opens your chat with a message about the listing ready to send.
 - **Pre-grading** — upload photos of the front and back for a PSA-style estimate with sub-grades.
   Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as
   straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots
@@ -205,6 +221,7 @@ lib/store.js     storage: PostgreSQL (DATABASE_URL) or a JSON file
 lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching + rate limiting
 lib/leaderboard.js  server-side collection values and rankings (global + per group)
 lib/groups.js    groups API: invites, chat, photos, card shares, permissions
+lib/social.js    profiles, friends, direct messages (two-person group chats) and store listings
 lib/visualIndex.js  picture fingerprints of every card (English + Japanese) and the photo search
 public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, descriptor.js = shared
                  card fingerprint (browser + server), grader.js = pre-grading
