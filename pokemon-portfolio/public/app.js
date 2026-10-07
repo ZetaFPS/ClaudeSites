@@ -1846,7 +1846,7 @@
       ? (psaEst ? 'estimate — no recent PSA 10 sales' : `${(psa10 / base).toFixed(1)}× ungraded`)
       : (loading ? 'Fetching graded sales…' : 'No graded sales found');
     const psaSrc = $('#psaValue')?.closest('.ph')?.querySelector('.src');
-    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : 'PriceCharting';
+    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : graded?.source === 'PokéFolio database' ? 'PokéFolio database' : 'PriceCharting';
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
   }
@@ -1882,11 +1882,13 @@
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
       ${gradedError ? '<p class="warn">⚠ PriceCharting couldn’t be reached just now, so these are estimates. Real graded sales will show again once it’s back.</p>' : ''}
-      ${graded.staleSince ? `<p class="warn">⚠ PriceCharting couldn’t be reached just now — these are the last graded prices saved for this card (${esc(timeAgo(graded.staleSince))}).</p>` : ''}
+      ${graded.source === 'PokéFolio database' ? `<p class="db-note"><b>PokéFolio database</b> · ${graded.origin === 'manual'
+    ? `graded prices added by PokéFolio ${esc(timeAgo(graded.savedAt))}${graded.note ? ` — ${esc(graded.note)}` : ''}`
+    : `last graded prices saved from PriceCharting ${esc(timeAgo(graded.savedAt))}`}. Live PriceCharting prices replace these as soon as they’re available.</p>` : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
       ${est.size ? `<p class="est-note"><b>≈ Estimated:</b> ${[...est].map(gradeLabel).join(', ')} ${est.size === 1 ? 'has' : 'have'} no recent graded sales, so ${est.size === 1 ? 'it’s' : 'they’re'} estimated ${graded.estimateBasis === 'graded' ? 'from this card’s real graded sales' : 'from its raw price'} using typical PSA premiums. Treat as a rough guide.</p>` : ''}
-      <p class="note">${graded.source === 'Estimate'
-        ? `No graded sales were found on PriceCharting for this card. <a href="${esc(graded.url)}" target="_blank" rel="noopener">Search PriceCharting ↗</a>`
+      <p class="note">${graded.source === 'Estimate' || graded.origin === 'manual'
+        ? `${graded.source === 'Estimate' ? 'No graded sales were found on PriceCharting for this card. ' : ''}<a href="${esc(graded.url)}" target="_blank" rel="noopener">Search PriceCharting ↗</a>`
         : `Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.`}
       Real values are recent sold listings. Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
       Grades 9 and below are PriceCharting's “Grade N” averages, made up mostly of PSA sales; 9.5 is mostly BGS/CGC.</p>`;
@@ -2793,7 +2795,7 @@
     $$('#admTabs [data-at]').forEach((x) => x.classList.toggle('active', x === b));
     $('#admSearch').hidden = adm.tab === 'warnings';
     $('#admQuery').value = '';
-    $('#admQuery').placeholder = adm.tab === 'users' ? 'Search accounts by name, @username or email' : 'Search listings by title, description or seller';
+    $('#admQuery').placeholder = { users: 'Search accounts by name, @username or email', products: 'Search listings by title, description or seller', prices: 'Find a card — e.g. “Charizard 4/102” or “Umbreon VMAX 215”' }[adm.tab];
     adm.q = '';
     loadAdminList(true);
   });
@@ -2845,6 +2847,7 @@
   async function loadAdminList(reset) {
     if (reset) { adm.items = []; adm.more = false; }
     if (adm.tab === 'warnings') { paintAdminList(); return; }
+    if (adm.tab === 'prices') { loadCardPriceAdmin(); return; }
     const req = ++adm.req;
     adm.loading = true;
     paintAdminList();
@@ -2864,7 +2867,101 @@
   const reasonName = (k) => adm.overview?.reasons?.[k] || k;
   const reasonOptions = (sel) => Object.entries(adm.overview?.reasons || { other: 'Breaking the community rules' })
     .map(([k, v]) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  /* ---- Card prices: graded prices admins type in (fallback "PokéFolio database") ---- */
+  const cp = { saved: [], grades: ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7', 'Ungraded'], results: null, loading: false, req: 0 };
+  const gradeName = (g) => (g === 'Ungraded' ? 'Raw (ungraded)' : g.replace('Grade', 'PSA'));
+  async function loadCardPriceAdmin() {
+    const req = ++cp.req;
+    cp.loading = true;
+    paintCardPriceAdmin();
+    try {
+      const saved = await api('/api/admin/card-prices');
+      cp.saved = saved.items;
+      cp.grades = saved.grades;
+      if (adm.q) {
+        const parsed = parseSearchText(adm.q);
+        cp.results = await findCards(parsed);
+      } else cp.results = null;
+    } catch (e) {
+      toast(e.message || 'Couldn’t load that');
+    }
+    if (req !== cp.req) return;
+    cp.loading = false;
+    paintCardPriceAdmin();
+  }
+  function paintCardPriceAdmin() {
+    if (adm.tab !== 'prices') return;
+    const savedIds = new Map(cp.saved.map((e) => [e.id, e]));
+    const row = (c, e) => `
+      <button class="adm-listing glass cp-row" data-cp="${esc(c.id)}">
+        <span class="adm-thumb card"><img ${imgAttrs({ id: c.id, images: { small: c.image || c.images?.small } })} alt="" loading="lazy"></span>
+        <span class="adm-main"><b>${esc(c.name)}</b><small>${esc(c.set?.name || c.set || '')}${c.number ? ` · #${esc(c.number)}` : ''}${c.lang === 'ja' ? ' · Japanese' : ''}</small>
+          ${e ? `<small class="cp-saved">${Object.entries(e.prices).map(([g, v]) => `${esc(gradeName(g))} ${money(v)}`).join(' · ')} — added ${esc(timeAgo(e.at))}</small>` : ''}</span>
+        <span class="btn sm ${e ? '' : 'primary'}">${e ? 'Edit' : 'Add prices'}</span>
+      </button>`;
+    let html;
+    if (cp.loading && !cp.saved.length && !cp.results) html = Array.from({ length: 3 }, () => '<div class="lb-row skeleton-row"></div>').join('');
+    else if (adm.q) {
+      html = cp.loading ? '<div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div>'
+        : cp.results?.length ? `<h4 class="profile-sub">Cards matching “${esc(adm.q)}”</h4><div class="adm-listings">${cp.results.slice(0, 30).map((c) => row(c, savedIds.get(c.id))).join('')}</div>`
+          : `<div class="groups-none"><b>No cards found</b><span>Try the name with its number, like “Pikachu 58/102”.</span></div>`;
+    } else {
+      html = `<p class="note">Search for a card above to add its graded prices. They’re used only when PriceCharting has no live prices for the card, and shown as coming from the <b>PokéFolio database</b>.</p>
+        <h4 class="profile-sub">Saved prices · ${cp.saved.length}</h4>
+        ${cp.saved.length ? `<div class="adm-listings">${cp.saved.map((e) => row({ id: e.id, ...e.card }, e)).join('')}</div>` : '<div class="groups-none"><b>No prices added yet</b><span>Find a card to add its PSA prices.</span></div>'}`;
+    }
+    $('#admList').innerHTML = html;
+    $('#admMore').innerHTML = '';
+  }
+  $('#admList').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cp]');
+    if (!b) return;
+    const c = cp.results?.find((x) => x.id === b.dataset.cp);
+    const saved = cp.saved.find((x) => x.id === b.dataset.cp);
+    openCardPriceForm(c ? { id: c.id, name: c.name, set: c.set?.name || '', number: c.number, image: c.images?.small, lang: c.lang } : { id: saved.id, ...saved.card }, saved);
+  });
+  function openCardPriceForm(card, saved) {
+    $('#sheetBody').innerHTML = `
+      <form class="adm-user adm-form-sheet" id="cpForm" novalidate>
+        <h3 id="sheetTitle">Graded prices</h3>
+        <div class="adm-listing glass"><span class="adm-thumb card"><img ${imgAttrs({ id: card.id, images: { small: card.image } })} alt=""></span>
+          <span class="adm-main"><b>${esc(card.name)}</b><small>${esc(card.set || '')}${card.number ? ` · #${esc(card.number)}` : ''}${card.lang === 'ja' ? ' · Japanese' : ''}</small></span></div>
+        <p class="muted">Used only when PriceCharting has no live prices for this card; shown as the <b>PokéFolio database</b>. Leave grades you don’t know empty — they’re estimated from the ones you enter.</p>
+        <div class="cp-grid">${cp.grades.map((g) => `
+          <div class="field"><label for="cp-${esc(g.replace(/\s/g, ''))}">${esc(gradeName(g))} (USD)</label>
+            <input id="cp-${esc(g.replace(/\s/g, ''))}" data-grade="${esc(g)}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—" value="${saved?.prices?.[g] ?? ''}"></div>`).join('')}</div>
+        <div class="field"><label for="cpNote">Source / note (optional)</label><input id="cpNote" maxlength="300" placeholder="e.g. Average of 3 eBay sales, Oct 2026" value="${esc(saved?.note || '')}"></div>
+        <p class="auth-error" id="cpErr" role="alert" hidden></p>
+        <div class="listing-own">
+          ${saved ? '<button type="button" class="btn danger" id="cpDelete">Remove</button>' : '<button type="button" class="btn ghost" id="cpCancel">Cancel</button>'}
+          <button class="btn primary glow">Save prices</button>
+        </div>
+      </form>`;
+    openSheetShell();
+    $('#cpCancel')?.addEventListener('click', closeSheet);
+    $('#cpDelete')?.addEventListener('click', async () => {
+      if (!confirm(`Remove the saved graded prices for ${card.name}?`)) return;
+      try { await api(`/api/admin/card-prices/${encodeURIComponent(card.id)}`, { method: 'DELETE' }); toast('Prices removed'); closeSheet(); loadCardPriceAdmin(); } catch (e) { toast(e.message || 'Couldn’t remove them'); }
+    });
+    $('#cpForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pricesIn = {};
+      $$('#cpForm [data-grade]').forEach((i) => { if (i.value.trim() !== '') pricesIn[i.dataset.grade] = i.value; });
+      const err = $('#cpErr');
+      err.hidden = true;
+      if (!Object.keys(pricesIn).length) { err.textContent = 'Enter at least one price.'; err.hidden = false; return; }
+      try {
+        await api(`/api/admin/card-prices/${encodeURIComponent(card.id)}`, { method: 'PUT', body: { prices: pricesIn, note: $('#cpNote').value } });
+        toast(`Saved prices for ${card.name}`);
+        for (const k of [...psaCache.keys()]) if (k.startsWith(`${card.id}|`)) psaCache.delete(k); // re-read on next PSA sort
+        closeSheet();
+        loadCardPriceAdmin();
+      } catch (ex) { err.textContent = ex.message || 'Couldn’t save — try again.'; err.hidden = false; }
+    });
+  }
+
   function paintAdminList() {
+    if (adm.tab === 'prices') { paintCardPriceAdmin(); return; }
     const box = $('#admList');
     if (adm.tab === 'warnings') {
       const ws = adm.overview?.recentWarnings || [];

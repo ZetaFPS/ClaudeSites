@@ -55,6 +55,12 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   were saved, instead of dropping to estimates. **Admin → Price sources → Test PriceCharting now**
   makes a live request from the server and shows what came back (HTTP status, bot-check page,
   prices found) — the quickest way to tell a block from a page change.
+  **Admin → Card prices** lets admins look up a card and type in its PSA 10 / 9 / 8 / 7 and raw prices
+  (plus a source note). These go into the same fallback database: they never replace live
+  PriceCharting prices, and are used only when PriceCharting has no live result for that card (the
+  newer of an admin price and a saved PriceCharting copy wins). Cards then label their graded
+  prices **PokéFolio database**, with when they were added; grades left empty are estimated from
+  the ones entered.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
   and shrunk on your device before upload, stored in the database, and shown in the top bar, on
   profiles and marketplace listings, and in chats and member lists.

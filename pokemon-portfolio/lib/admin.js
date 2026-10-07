@@ -93,6 +93,46 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
       return true;
     }
 
+    // Manually entered graded prices (fallback database).
+    // GET /api/admin/card-prices · PUT /api/admin/card-prices/:cardId { prices, note } · DELETE …/:cardId
+    if (section === 'card-prices') {
+      if (!id && method === 'GET') {
+        send(res, 200, { grades: prices.MANUAL_GRADES, items: prices.listManualPrices() });
+        return true;
+      }
+      const cardId = decodeURIComponent(id || '');
+      if (!/^[A-Za-z0-9._:-]{1,80}$/.test(cardId)) throw httpError(400, 'Unknown card.');
+      if (method === 'GET') {
+        send(res, 200, { grades: prices.MANUAL_GRADES, entry: prices.getManualPrices(cardId) });
+        return true;
+      }
+      if (method === 'DELETE') {
+        await prices.setManualPrices(cardId, null);
+        send(res, 200, { ok: true });
+        return true;
+      }
+      if (method === 'PUT') {
+        const body = await readBody(req);
+        const clean = {};
+        for (const g of prices.MANUAL_GRADES) {
+          const raw = body.prices?.[g];
+          if (raw === '' || raw == null) continue;
+          const n = Math.round(Number(raw) * 100) / 100;
+          if (!Number.isFinite(n) || n < 0 || n > 1e8) throw httpError(400, `Enter a valid price for ${g}.`);
+          clean[g] = n;
+        }
+        if (!Object.keys(clean).length) throw httpError(400, 'Enter at least one price.');
+        const card = await prices.getCard(cardId).catch(() => null);
+        if (!card) throw httpError(404, 'Couldn’t find that card.');
+        const entry = await prices.setManualPrices(cardId, {
+          prices: clean, note: String(body.note || '').trim().slice(0, 300), by: me.id,
+          card: { name: card.name, set: card.set?.name || '', number: card.number || '', image: card.images?.small || null, lang: card.lang || 'en' },
+        });
+        send(res, 200, { entry: { id: cardId, ...entry } });
+        return true;
+      }
+    }
+
     if (section === 'users') {
       // GET /api/admin/users?q=&offset=
       if (!id && method === 'GET') {

@@ -1421,3 +1421,10 @@ select::-ms-expand { display: none; }
 .adm-tests li { padding: 8px 10px; border-radius: 10px; background: var(--glass); border-left: 3px solid var(--up); overflow-wrap: anywhere; }
 .adm-tests li.bad { border-left-color: var(--down); }
 .adm-tests small { display: block; color: var(--text-3); font-size: 11.5px; margin-top: 2px; }
+.db-note { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.5; color: var(--text-2); background: rgba(34, 211, 238, .07); border: 1px solid rgba(34, 211, 238, .3); }
+.db-note b { color: var(--cyan); }
+.cp-row { width: 100%; text-align: left; color: inherit; }
+.cp-row .btn { flex: none; }
+.cp-saved { color: var(--up) !important; white-space: normal !important; }
+.adm-thumb.card { width: 44px; height: 61px; border-radius: 5px; }
+.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
