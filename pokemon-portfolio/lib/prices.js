@@ -454,10 +454,10 @@ function pickProduct(cands, info) {
 async function pcViaApi(info) {
   const token = process.env.PRICECHARTING_TOKEN;
   for (const q of pcQueries(info)) {
-    const res = await pcRetry(() => pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`)));
+    const res = await pcGuarded(() => pcRetry(() => pcLimit(() => getJson(`${PC}/api/products?t=${encodeURIComponent(token)}&q=${encodeURIComponent(q)}`))));
     const best = pickProduct((res.products || []).map((p) => ({ console: p['console-name'], product: p['product-name'], ref: p.id })), info);
     if (best) {
-      const p = await pcRetry(() => pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.ref)}`)));
+      const p = await pcGuarded(() => pcRetry(() => pcLimit(() => getJson(`${PC}/api/product?t=${encodeURIComponent(token)}&id=${encodeURIComponent(best.ref)}`))));
       const prices = {};
       for (const [field, label] of PC_API_FIELDS) if (p[field] > 0) prices[label] = p[field] / 100;
       return {
@@ -483,12 +483,48 @@ async function pcRetry(fn) {
     }
   }
 }
+// If PriceCharting starts refusing us (403/429 or a bot-check page), pause every PriceCharting
+// request for a while — 2 minutes, doubling up to 30 — instead of hammering it, which only keeps
+// the block in place. Graded prices fall back to estimates meanwhile, and the reason is logged
+// and shown at /api/health.
+const pcState = { blockedUntil: 0, backoff: 0, lastError: null, lastErrorAt: 0, lastOkAt: 0 };
+function pcGuard() {
+  if (Date.now() < pcState.blockedUntil) throw new Error(`PriceCharting paused after "${pcState.lastError}" — retrying in ${Math.ceil((pcState.blockedUntil - Date.now()) / 60e3)} min`);
+}
+function pcFailed(e) {
+  pcState.lastError = e.message;
+  pcState.lastErrorAt = Date.now();
+  if (!/responded (403|429)|bot check/.test(e.message)) return;
+  pcState.backoff = Math.min(30 * 60e3, pcState.backoff ? pcState.backoff * 2 : 2 * 60e3);
+  pcState.blockedUntil = Date.now() + pcState.backoff;
+  console.warn(`PriceCharting refused a request (${e.message}) — pausing PriceCharting lookups for ${pcState.backoff / 60e3} min`);
+}
+function pcOk() { pcState.backoff = 0; pcState.lastOkAt = Date.now(); }
+async function pcGuarded(fn) {
+  pcGuard();
+  try {
+    const out = await fn();
+    pcOk();
+    return out;
+  } catch (e) {
+    if (!/responded 404/.test(e.message)) pcFailed(e);
+    throw e;
+  }
+}
+const pcStatus = () => ({
+  ok: Date.now() >= pcState.blockedUntil, pausedUntil: pcState.blockedUntil > Date.now() ? new Date(pcState.blockedUntil).toISOString() : null,
+  lastError: pcState.lastError, lastErrorAt: pcState.lastErrorAt ? new Date(pcState.lastErrorAt).toISOString() : null,
+  lastSuccessAt: pcState.lastOkAt ? new Date(pcState.lastOkAt).toISOString() : null,
+});
+
 async function pcFetchPage(url) {
-  return pcRetry(async () => {
+  return pcGuarded(() => pcRetry(async () => {
     const res = await pcLimit(() => fetchWithTimeout(url, { headers: { Accept: 'text/html' }, redirect: 'follow' }));
     if (!res.ok) throw new Error(`PriceCharting responded ${res.status}`);
-    return { url: res.url || url, html: await res.text() };
-  });
+    const html = await res.text();
+    if (/<title>\s*Just a moment|challenge-platform|cf-chl-/i.test(html)) throw new Error('PriceCharting responded 403 (bot check)');
+    return { url: res.url || url, html };
+  }));
 }
 
 function parseProductPage(html) {
@@ -804,14 +840,23 @@ async function imageCandidates(id, size = 'small') {
 }
 // Last resort when none of those load (brand-new sets the card databases haven't pictured yet):
 // the photo on the card's PriceCharting page.
+// Only for English cards from sets released in the last year (what it's for: brand-new sets), and a
+// miss is remembered for 6 hours — picture requests must never crowd out price lookups.
+const pcImgMiss = new Map(); // card id -> retry after
 async function pcCardImage(id) {
+  if ((pcImgMiss.get(id) || 0) > Date.now()) return null;
   const card = await getCard(id).catch(() => null);
-  if (!card) return null;
+  if (!card || card.lang === 'ja' || !cardInfo(card).recent) return null;
   const pc = await priceCharting(await priceInfo(card)).catch(() => null);
-  return pc?.image && PC_IMG.test(pc.image) ? pc.image : null;
+  const img = pc?.image && PC_IMG.test(pc.image) ? pc.image : null;
+  if (!img) {
+    pcImgMiss.set(id, Date.now() + 6 * HOUR);
+    if (pcImgMiss.size > 5000) pcImgMiss.delete(pcImgMiss.keys().next().value);
+  }
+  return img;
 }
 
 module.exports = {
-  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, pcCardImage, parseId, boosterImage, PC_IMG,
+  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, pcCardImage, parseId, boosterImage, PC_IMG, pcStatus,
   _test: { packImageFrom, scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
 };

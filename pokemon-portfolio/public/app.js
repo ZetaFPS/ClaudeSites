@@ -1881,6 +1881,7 @@
         ${rawPrice != null ? rung('Ungraded', rawPrice, 'raw') : ''}
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
+      ${gradedError ? '<p class="warn">⚠ PriceCharting couldn’t be reached just now, so these are estimates. Real graded sales will show again once it’s back.</p>' : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
       ${est.size ? `<p class="est-note"><b>≈ Estimated:</b> ${[...est].map(gradeLabel).join(', ')} ${est.size === 1 ? 'has' : 'have'} no recent graded sales, so ${est.size === 1 ? 'it’s' : 'they’re'} estimated ${graded.estimateBasis === 'graded' ? 'from this card’s real graded sales' : 'from its raw price'} using typical PSA premiums. Treat as a rough guide.</p>` : ''}
       <p class="note">${graded.source === 'Estimate'

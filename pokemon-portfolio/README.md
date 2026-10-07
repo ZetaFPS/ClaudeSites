@@ -45,6 +45,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   with that exact name in a closely matching set. Grades with no recent sales (PSA 10/9/8/7) are
   **estimated** — scaled from the card's real graded sales when it has some, otherwise from its raw
   price using typical PSA premiums — and always shown as "≈ … est." with a striped bar.
+  If PriceCharting refuses the server's requests (403/429 or a bot-check page), all PriceCharting
+  lookups pause for 2 minutes (doubling up to 30) rather than retrying constantly, the card view says
+  graded prices are estimates for now, and `/api/health` shows `priceCharting.lastError` and when
+  lookups resume. Card-photo lookups on PriceCharting are limited to English cards from sets
+  released in the last year, and a miss is remembered for 6 hours.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
   and shrunk on your device before upload, stored in the database, and shown in the top bar, on
   profiles and marketplace listings, and in chats and member lists.

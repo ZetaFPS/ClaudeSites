@@ -126,6 +126,7 @@ async function api(req, res, url) {
       storage: store.kind === 'postgres' ? 'postgres' : 'file',
       persistent: storagePersistent(),
       hosted: isHosted(),
+      priceCharting: prices.pcStatus(), // graded prices: is PriceCharting answering?
     });
   }
 
