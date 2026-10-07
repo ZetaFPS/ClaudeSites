@@ -78,13 +78,15 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   Just for fun: opened cards are never added to the collection.
 - **Highest PSA potential** — a collection sort that ranks cards by how much more a PSA 10 is worth
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
-- **Navigation** — on phones the bottom bar has **Portfolio · Messages · Scan · Friends · More**;
-  **More** opens Index, Packs, Marketplace, Grade (beta) and Search. On wide screens every page is
-  in the sidebar.
+- **Navigation** — on phones the bottom bar has **Portfolio · Messages · Add · Friends · More**;
+  **More** opens Index, Packs, Marketplace and Grade (beta). On wide screens every page is in the
+  sidebar. **Add** is where you scan or search for a card (on phones the search bar and its results
+  sit above the scanner).
 - **Marketplace** — every collector's store listings in one place, newest first or sorted by
   price, 24 at a time. Search matches every word you type against titles, descriptions and seller
   names/usernames. **+ Sell something** posts a listing straight from the page. Anyone can browse;
-  contacting a seller needs an account (add them as a friend, then **Message seller**).
+  **Message seller** (signed in) opens a chat straight away — no need to be friends first. Listing
+  pictures swipe on phones, and have arrows, dots and ←/→ keys on computers.
 - **Messages** — direct messages with friends and group chats, in one list. Create a group, name
   it and invite friends with an 8-character code or link. Each group has a chat (text, photos, and
   cards shared from your collection with their live price), its own members-only leaderboard
@@ -102,12 +104,12 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - **Friends** — add collectors by @username on the **Friends** page or
   with **+ Add friend** on their profile. They accept or decline; either of you can cancel or
   unfriend. New requests show a badge on the Friends tab.
-- **Direct messages** — friends can message each other one-to-one (**Message** on a profile or in
-  the friends list). Direct chats appear in **Messages** with your groups and work the same way (text, photos,
-  card shares), but only between people who are still friends.
+- **Direct messages** — message any collector one-to-one with **Message** on their profile, on a
+  listing, or in your friends list — you don't need to be friends. Direct chats appear in
+  **Messages** with your groups and work the same way (text, photos, card shares).
 - **Stores** — list things you're selling or trading on your profile: up to 6 pictures (resized
   on your device), a title, a price and a description; edit or delete them any time (up to 60
-  listings). There's no checkout: a buyer adds you as a friend and taps **Message seller**, which
+  listings). There's no checkout: a buyer taps **Message seller**, which
   opens your chat with a message about the listing ready to send.
 - **Pre-grading (beta, still in development)** — upload photos of the front and back for a PSA-style estimate with sub-grades.
   Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as

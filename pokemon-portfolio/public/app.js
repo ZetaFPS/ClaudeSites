@@ -493,8 +493,8 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.goto === view && ('focusSearch' in t.dataset) === focusSearch));
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
-    // On phones, Index/Packs/Marketplace/Grade/Search live under "More": highlight it when one is open.
-    $('#moreBtn').classList.toggle('active', ['index', 'packs', 'market', 'grade'].includes(view) || (view === 'scan' && focusSearch));
+    // On phones, Index/Packs/Marketplace/Grade live under "More": highlight it when one is open.
+    $('#moreBtn').classList.toggle('active', ['index', 'packs', 'market', 'grade'].includes(view));
     $$('#moreMenu [data-goto]').forEach((b) => b.classList.toggle('active', b.dataset.goto === view && ('focusSearch' in b.dataset) === focusSearch));
     closeMore();
     if (view !== 'scan' || focusSearch) stopCamera();
@@ -2129,11 +2129,12 @@
   function relationButtons(rel) {
     if (!user) return '<button class="btn primary" data-pa="signin">Sign in to add friends</button>';
     switch (rel) {
+      // Anyone can be messaged; the friend button sits beside it.
       case 'self': return '<button class="btn" data-pa="edit">Edit profile</button>';
       case 'friends': return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn ghost" data-pa="unfriend">Friends ✓</button>';
-      case 'outgoing': return '<button class="btn" data-pa="cancel">Request sent · Cancel</button>';
-      case 'incoming': return '<button class="btn primary glow" data-pa="accept">Accept friend request</button><button class="btn ghost" data-pa="decline">Decline</button>';
-      default: return '<button class="btn primary glow" data-pa="add">+ Add friend</button>';
+      case 'outgoing': return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn" data-pa="cancel">Request sent · Cancel</button>';
+      case 'incoming': return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn" data-pa="accept">Accept friend request</button><button class="btn ghost" data-pa="decline">Decline</button>';
+      default: return '<button class="btn primary glow" data-pa="message">Message</button><button class="btn" data-pa="add">+ Add friend</button>';
     }
   }
   const listingTile = (p) => `
@@ -2144,8 +2145,8 @@
         ${p.seller ? `<span class="listing-seller"><span class="pod-avatar xs">${faceHtml(p.seller.name, p.seller.avatar)}</span>${esc(p.seller.username ? `@${p.seller.username}` : p.seller.name)}</span>` : ''}
       </button>`;
   const storeGrid = (products, self) => (products.length ? `<div class="store-grid">${products.map(listingTile).join('')}</div>` : `<div class="groups-none"><b>${self ? 'Nothing listed yet' : 'Nothing listed right now'}</b><span>${self
-    ? 'List cards or products you’re selling or trading. Buyers add you as a friend and message you — there’s no checkout.'
-    : 'Check back later, or add them as a friend and ask what they have.'}</span></div>`);
+    ? 'List cards or products you’re selling or trading. Buyers message you to arrange it — there’s no checkout.'
+    : 'Check back later, or message them and ask what they have.'}</span></div>`);
 
   function renderProfile() {
     const { data } = profileCtx;
@@ -2298,16 +2299,19 @@
     const own = relation === 'self';
     const contact = !user ? '<button class="btn primary block" data-la="signin">Sign in to contact the seller</button>'
       : own ? '<div class="listing-own"><button class="btn primary" data-la="edit">Edit listing</button><button class="btn danger" data-la="delete">Delete</button></div>'
-        : relation === 'friends' ? '<button class="btn primary glow block" data-la="message">Message seller</button>'
-          : relation === 'outgoing' ? '<button class="btn block" disabled>Friend request sent — you can message once they accept</button>'
-            : relation === 'incoming' ? '<button class="btn primary glow block" data-la="accept">Accept their friend request to message</button>'
-              : '<button class="btn primary glow block" data-la="add">+ Add seller as a friend to message them</button>';
+        : `<div class="listing-own"><button class="btn primary glow" data-la="message">Message seller</button>${
+          relation === 'friends' ? '' : relation === 'outgoing' ? '<button class="btn" disabled>Friend request sent</button>'
+            : relation === 'incoming' ? '<button class="btn" data-la="accept">Accept friend request</button>'
+              : '<button class="btn" data-la="add">+ Add friend</button>'}</div>`;
     $('#sheetBody').innerHTML = `
       <div class="listing-view">
         ${backTo ? '<button class="link-btn back-link" data-la="back">← Back to profile</button>' : ''}
         <div class="gallery-wrap">
           <div class="gallery" id="gallery">${p.images.map((src, i) => `<button class="gallery-img" data-img="${esc(src)}"><img src="${esc(src)}" alt="${esc(p.title)} — picture ${i + 1}" ${i ? 'loading="lazy"' : ''}></button>`).join('')}</div>
-          ${p.images.length > 1 ? `<div class="gallery-dots" id="galleryDots">${p.images.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('')}</div>` : ''}
+          ${p.images.length > 1 ? `
+            <button class="gallery-nav prev" id="galPrev" aria-label="Previous picture" disabled><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+            <button class="gallery-nav next" id="galNext" aria-label="Next picture"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
+            <div class="gallery-dots" id="galleryDots">${p.images.map((_, i) => `<button class="${i ? '' : 'on'}" data-gi="${i}" aria-label="Picture ${i + 1} of ${p.images.length}"></button>`).join('')}</div>` : ''}
         </div>
         <div class="listing-info">
           <h3 id="sheetTitle">${esc(p.title)}</h3>
@@ -2319,11 +2323,29 @@
           <p class="note">PokéFolio doesn’t handle payments or shipping. Agree the details with the seller in chat, and only pay in ways you trust.</p>
         </div>
       </div>`;
+    // Pictures: swipe on touch screens; arrows, dots or ←/→ keys with a mouse.
     const gal = $('#gallery');
-    gal.addEventListener('scroll', () => {
-      const i = Math.round(gal.scrollLeft / gal.clientWidth);
-      $$('#galleryDots i').forEach((d, k) => d.classList.toggle('on', k === i));
-    }, { passive: true });
+    const count = p.images.length;
+    const current = () => Math.round(gal.scrollLeft / Math.max(1, gal.clientWidth));
+    const showPic = (i) => gal.scrollTo({ left: Math.max(0, Math.min(count - 1, i)) * gal.clientWidth, behavior: 'smooth' });
+    const paintNav = () => {
+      const i = current();
+      $$('#galleryDots button').forEach((d, k) => d.classList.toggle('on', k === i));
+      if ($('#galPrev')) { $('#galPrev').disabled = i <= 0; $('#galNext').disabled = i >= count - 1; }
+    };
+    gal.addEventListener('scroll', paintNav, { passive: true });
+    $('#galPrev')?.addEventListener('click', () => showPic(current() - 1));
+    $('#galNext')?.addEventListener('click', () => showPic(current() + 1));
+    $$('#galleryDots button').forEach((d) => d.addEventListener('click', () => showPic(+d.dataset.gi)));
+    if (count > 1) {
+      const onKey = (e) => {
+        if (!document.body.contains(gal)) return document.removeEventListener('keydown', onKey);
+        if ($('#sheet').hidden || document.querySelector('.lightbox') || /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '')) return;
+        if (e.key === 'ArrowLeft') { e.preventDefault(); showPic(current() - 1); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); showPic(current() + 1); }
+      };
+      document.addEventListener('keydown', onKey);
+    }
     $$('.gallery-img').forEach((b) => b.addEventListener('click', () => openLightbox(b.dataset.img)));
     $$('[data-la]').forEach((b) => b.addEventListener('click', async () => {
       const act = b.dataset.la;
@@ -2360,7 +2382,7 @@
     $('#sheetBody').innerHTML = `
       <form class="listing-form" id="listingForm" novalidate>
         <h3 id="sheetTitle">${existing ? 'Edit listing' : 'List an item'}</h3>
-        <p class="muted">Shown in the store on your profile. There’s no checkout — interested collectors add you as a friend and message you.</p>
+        <p class="muted">Shown in the store on your profile. There’s no checkout — interested collectors message you.</p>
         <div class="field"><label>Pictures <span class="count" id="picCount"></span></label><div class="pic-row" id="picRow"></div>
           <input type="file" id="picInput" accept="image/*" multiple hidden></div>
         <div class="field"><label for="lTitle">Title</label><input id="lTitle" maxlength="80" required placeholder="e.g. Base Set Charizard — PSA 9" value="${esc(existing?.title || '')}"></div>

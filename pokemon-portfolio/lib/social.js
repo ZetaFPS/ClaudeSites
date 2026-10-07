@@ -7,9 +7,10 @@
 //     only when its owner turns on "Show my whole collection" (showCollection).
 //   • Friend requests need a username (or a profile button); a request to someone who already asked
 //     you just accepts theirs. Either side can cancel, decline or unfriend.
-//   • Direct messages are two-person chats that only friends can start or post in; they reuse the
-//     group chat (lib/groups.js) for messages, photos and card shares.
-//   • Store listings are adverts only — there's no checkout. Buyers add the seller and chat.
+//   • Direct messages are two-person chats any signed-in collector can start (no friendship needed,
+//     so buyers can ask sellers straight away); they reuse the group chat (lib/groups.js) for
+//     messages, photos and card shares.
+//   • Store listings are adverts only — there's no checkout. Buyers message the seller.
 //     Only the owner can add, edit or delete their listings; pictures are checked to be real images.
 const crypto = require('crypto');
 const { avatarUrl, checkUsername } = require('./auth');
@@ -103,10 +104,9 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
     return out;
   }
 
-  // The two-person chat between friends (created the first time either opens it).
+  // The two-person chat between two collectors (created the first time either opens it).
   async function dmWith(user, otherId) {
-    const f = await store.getFriendship(user.id, otherId);
-    if (f?.status !== 'accepted') throw httpError(403, 'Add each other as friends to chat.');
+    if (!(await store.getUser(otherId))) throw httpError(404, 'That collector doesn’t exist any more.');
     const key = [user.id, otherId].sort().join('|');
     let g = await store.getGroupByDmKey(key);
     if (!g) {

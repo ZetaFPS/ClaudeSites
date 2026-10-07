@@ -145,7 +145,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     const sub = parts[3];
     // Direct messages have no settings: no renaming, inviting, removing or leaving.
     if (isDm(group) && ((!sub && method !== 'GET') || ['invite', 'leave', 'members'].includes(sub))) {
-      throw httpError(400, 'Direct messages can’t be changed — unfriend the person instead.');
+      throw httpError(400, 'Direct messages can’t be renamed, shared or left.');
     }
 
     // GET /api/groups/:id
@@ -225,11 +225,6 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     // POST /api/groups/:id/messages — { text } | { kind: 'card', cardId, variant, text? } | { kind: 'image', image: dataURL, text? }
     if (sub === 'messages' && !parts[4] && method === 'POST') {
       limitWrite(req);
-      if (isDm(group)) {
-        const other = otherOf(await store.listMembers(gid), user);
-        const f = other && await store.getFriendship(user.id, other.userId);
-        if (f?.status !== 'accepted') throw httpError(403, 'You’re no longer friends, so you can’t send messages here.');
-      }
       const body = await readBody(req);
       const text = typeof body.text === 'string' ? body.text.replace(/\r\n/g, '\n').trim().slice(0, MAX_TEXT) : '';
       const msg = { groupId: gid, userId: user.id, kind: 'text', body: text, createdAt: Date.now() };

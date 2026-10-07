@@ -153,7 +153,7 @@
       </section>
 
       <!-- SCAN -->
-      <section class="view" id="view-scan" aria-label="Scan">
+      <section class="view" id="view-scan" aria-label="Add a card">
         <div class="scan-layout">
         <div class="scan-col">
         <div class="scanner">
@@ -286,7 +286,7 @@
         </form>
         <div class="store-grid market-grid" id="mkGrid"></div>
         <div class="market-more" id="mkMore"></div>
-        <p class="note">PokéFolio doesn’t handle payments or shipping. To buy something, add the seller as a friend and message them — agree the details in chat and only pay in ways you trust.</p>
+        <p class="note">PokéFolio doesn’t handle payments or shipping. To buy something, message the seller — agree the details in chat and only pay in ways you trust.</p>
       </section>
 
       <!-- GROUPS -->
@@ -403,11 +403,11 @@
         <span>Messages</span>
         <b class="tab-badge" id="groupsBadge" hidden></b>
       </button>
-      <button class="tab tab-scan" data-goto="scan" aria-label="Scan">
+      <button class="tab tab-scan" data-goto="scan" aria-label="Add a card: scan or search">
         <span class="tab-scan-btn">
           <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
         </span>
-        <span>Scan</span>
+        <span>Add</span>
       </button>
       <button class="tab" data-goto="friends">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c1-3.6 3.6-5.5 6.5-5.5s5.5 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.7.8 2.9 2.5 3.5 5.2"/></svg>
@@ -421,10 +421,6 @@
       <button class="tab tab-secondary" data-goto="grade">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M9 7h6M9 11h6"/><path d="M9.5 16.5l1.6 1.6 3.4-3.6"/></svg>
         <span>Grade</span> <em class="beta-tag">Beta</em>
-      </button>
-      <button class="tab tab-wide-only" data-goto="scan" data-focus-search>
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <span>Search</span>
       </button>
       <button class="tab tab-more" id="moreBtn" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
@@ -448,10 +444,6 @@
       <button role="menuitem" data-goto="grade">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M9 7h6M9 11h6"/><path d="M9.5 16.5l1.6 1.6 3.4-3.6"/></svg>
         <span>Grade β</span>
-      </button>
-      <button role="menuitem" data-goto="scan" data-focus-search>
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <span>Search</span>
       </button>
     </div>
   </div>
