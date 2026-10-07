@@ -91,7 +91,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   it and invite friends with an 8-character code or link. Each group has a chat (text, photos, and
   cards shared from your collection with their live price), its own members-only leaderboard
   (collection values recalculated on the server from current market prices, so they can't be
-  faked), and a members page. The owner can rename the group, reset the invite code, remove members or delete
+  faked), and a members page. The bin button in a chat's header deletes the conversation: a direct
+  or Admin chat is removed from your Messages only (the other person keeps theirs, and a new message
+  starts it again showing only new messages); for a group it leaves — or, for the owner, deletes
+  the group for everyone. Each asks for confirmation first. The owner can rename the group, reset the invite code, remove members or delete
   it; members can delete their own messages and leave. Only members can read a group or load its
   photos. Messages and photos are stored in the database, so they survive site updates too.
 - **Usernames & profiles** — every account has a unique @username (picked at sign-up; older

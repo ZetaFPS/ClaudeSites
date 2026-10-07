@@ -130,7 +130,8 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
 
     // GET /api/groups — my groups, newest activity first
     if (parts.length === 2 && method === 'GET') {
-      const rows = await store.listUserGroups(user.id);
+      // A direct/Admin conversation the user deleted stays out of the list until a new message arrives.
+      const rows = (await store.listUserGroups(user.id)).filter((g) => !(isPrivate(g) && g.hiddenSeq && (!g.last || g.last.seq <= g.hiddenSeq)));
       // Direct messages are named after (and pictured as) the other person.
       const others = new Map(await Promise.all(rows.filter(isDm).map(async (g) => [g.id, otherOf(await store.listMembers(g.id), user)])));
       const groups = rows.map((g) => ({
@@ -238,6 +239,16 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       return true;
     }
 
+    // POST /api/groups/:id/hide — delete a direct or Admin conversation for me only: its messages
+    // disappear from my Messages (the other person keeps theirs) until someone writes again.
+    if (sub === 'hide' && method === 'POST') {
+      if (!isPrivate(group)) throw httpError(400, 'To remove a group chat, leave the group (or delete it if you own it).');
+      const [latest] = await store.listMessages(gid, { limit: 1 });
+      await store.setHiddenSeq(gid, user.id, Math.max(latest?.seq || 0, 1));
+      send(res, 200, { ok: true });
+      return true;
+    }
+
     // GET /api/groups/:id/leaderboard
     if (sub === 'leaderboard' && method === 'GET') {
       const members = await store.listMembers(gid);
@@ -250,7 +261,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       const after = Math.max(0, parseInt(url.searchParams.get('after'), 10) || 0);
       const beforeRaw = parseInt(url.searchParams.get('before'), 10);
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit'), 10) || 50));
-      const msgs = await store.listMessages(gid, { after, before: Number.isFinite(beforeRaw) ? beforeRaw : null, limit });
+      const msgs = await store.listMessages(gid, { after, before: Number.isFinite(beforeRaw) ? beforeRaw : null, limit, min: member.hiddenSeq || 0 });
       if (msgs.length) await store.setLastRead(gid, user.id, msgs[msgs.length - 1].seq);
       send(res, 200, { messages: msgs.map(publicMessage) });
       return true;

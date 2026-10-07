@@ -111,7 +111,11 @@ function fileStore(dir) {
       save();
     },
     async removeMember(groupId, userId) { if (data.members[groupId]) { delete data.members[groupId][userId]; save(); } },
-    async getMember(groupId, userId) { return data.members[groupId]?.[userId] || null; },
+    async getMember(groupId, userId) { const m = data.members[groupId]?.[userId]; return m ? { hiddenSeq: 0, ...m } : null; },
+    async setHiddenSeq(groupId, userId, seq) {
+      const m = data.members[groupId]?.[userId];
+      if (m) { m.hiddenSeq = seq; if (seq > m.lastRead) m.lastRead = seq; save(); }
+    },
     async listMembers(groupId) {
       return Object.entries(data.members[groupId] || {}).filter(([uid]) => data.users[uid])
         .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
@@ -127,7 +131,7 @@ function fileStore(dir) {
         const msgs = data.messages[gid] || [];
         const last = msgs[msgs.length - 1] || null;
         out.push({
-          ...g, role: me.role, lastRead: me.lastRead, memberCount: Object.keys(mem).length,
+          ...g, role: me.role, lastRead: me.lastRead, hiddenSeq: me.hiddenSeq || 0, memberCount: Object.keys(mem).length,
           last: last && { ...last, name: data.users[last.userId]?.name || 'Someone' },
           unread: msgs.filter((m) => m.seq > me.lastRead && m.userId !== userId).length,
         });
@@ -144,8 +148,9 @@ function fileStore(dir) {
       save();
       return full;
     },
-    async listMessages(groupId, { after = 0, before = null, limit = 50 } = {}) {
-      let msgs = (data.messages[groupId] || []).filter((m) => m.seq > after && (before == null || m.seq < before));
+    // `min`: never return messages at or below this seq (a conversation the reader deleted).
+    async listMessages(groupId, { after = 0, before = null, limit = 50, min = 0 } = {}) {
+      let msgs = (data.messages[groupId] || []).filter((m) => m.seq > after && m.seq > min && (before == null || m.seq < before));
       msgs = after ? msgs.slice(0, limit) : msgs.slice(-limit);
       return msgs.map((m) => ({ ...m, name: data.users[m.userId]?.name || 'Former member', avatarAt: data.users[m.userId]?.avatarAt || null }));
     },
@@ -414,6 +419,7 @@ async function pgStore(url, legacyDir) {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS warnings_user ON warnings (user_id, created_at DESC);
+    ALTER TABLE group_members ADD COLUMN IF NOT EXISTS hidden_seq BIGINT NOT NULL DEFAULT 0;
     CREATE TABLE IF NOT EXISTS kv (
       key        TEXT PRIMARY KEY,
       value      JSONB NOT NULL,
@@ -526,8 +532,11 @@ async function pgStore(url, legacyDir) {
     },
     async removeMember(groupId, userId) { await q('DELETE FROM group_members WHERE group_id = $1 AND user_id = $2', [groupId, userId]); },
     async getMember(groupId, userId) {
-      const r = (await q('SELECT role, joined_at, last_read FROM group_members WHERE group_id = $1 AND user_id = $2', [groupId, userId])).rows[0];
-      return r ? { role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read } : null;
+      const r = (await q('SELECT role, joined_at, last_read, hidden_seq FROM group_members WHERE group_id = $1 AND user_id = $2', [groupId, userId])).rows[0];
+      return r ? { role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read, hiddenSeq: +r.hidden_seq } : null;
+    },
+    async setHiddenSeq(groupId, userId, seq) {
+      await q('UPDATE group_members SET hidden_seq = $3, last_read = GREATEST(last_read, $3) WHERE group_id = $1 AND user_id = $2', [groupId, userId, seq]);
     },
     async listMembers(groupId) {
       const { rows } = await q(`SELECT m.user_id, u.name, u.avatar_at, m.role, m.joined_at, m.last_read FROM group_members m JOIN users u ON u.id = m.user_id
@@ -540,7 +549,7 @@ async function pgStore(url, legacyDir) {
     async setMemberRole(groupId, userId, role) { await q('UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2', [groupId, userId, role]); },
     async listUserGroups(userId) {
       const { rows } = await q(`
-        SELECT g.*, m.role, m.last_read,
+        SELECT g.*, m.role, m.last_read, m.hidden_seq,
           (SELECT COUNT(*)::int FROM group_members WHERE group_id = g.id) AS member_count,
           (SELECT COUNT(*)::int FROM group_messages WHERE group_id = g.id AND seq > m.last_read AND user_id <> $1) AS unread,
           (SELECT row_to_json(x) FROM (
@@ -549,7 +558,7 @@ async function pgStore(url, legacyDir) {
              WHERE gm.group_id = g.id ORDER BY gm.seq DESC LIMIT 1) x) AS last
         FROM groups g JOIN group_members m ON m.group_id = g.id
         WHERE m.user_id = $1`, [userId]);
-      return rows.map((r) => ({ ...toGroup(r), role: r.role, lastRead: +r.last_read, memberCount: r.member_count, unread: r.unread,
+      return rows.map((r) => ({ ...toGroup(r), role: r.role, lastRead: +r.last_read, hiddenSeq: +r.hidden_seq, memberCount: r.member_count, unread: r.unread,
         last: r.last && { ...r.last, seq: +r.last.seq, createdAt: +r.last.createdAt, name: r.last.name || 'Former member' } }));
     },
     async setLastRead(groupId, userId, seq) {
@@ -561,9 +570,9 @@ async function pgStore(url, legacyDir) {
       [msg.groupId, msg.userId, msg.kind, msg.body ?? null, msg.imageId ?? null, msg.card ? JSON.stringify(msg.card) : null, msg.createdAt])).rows[0];
       return { ...msg, seq: +r.seq };
     },
-    async listMessages(groupId, { after = 0, before = null, limit = 50 } = {}) {
-      const vals = [groupId, after];
-      let where = 'gm.group_id = $1 AND gm.seq > $2';
+    async listMessages(groupId, { after = 0, before = null, limit = 50, min = 0 } = {}) {
+      const vals = [groupId, after, min];
+      let where = 'gm.group_id = $1 AND gm.seq > $2 AND gm.seq > $3';
       if (before != null) { vals.push(before); where += ` AND gm.seq < $${vals.length}`; }
       vals.push(limit);
       const order = after ? 'ASC' : 'DESC';

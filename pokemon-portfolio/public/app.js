@@ -37,8 +37,9 @@
     const res = await fetch(path, {
       method,
       credentials: 'same-origin',
-      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
-      body: body ? JSON.stringify(body) : undefined,
+      // Every change request carries a JSON body (an empty one for most deletes).
+      headers: { ...(method !== 'GET' ? { 'Content-Type': 'application/json' } : {}), ...headers },
+      body: method !== 'GET' ? JSON.stringify(body ?? {}) : undefined,
     });
     let json = null;
     try { json = await res.json(); } catch { /* non-JSON */ }
@@ -3105,6 +3106,31 @@
     }
     renderGroupPane();
   }
+  // Delete a conversation from Messages. Direct and Admin chats are removed for me only (the other
+  // person keeps theirs; a new message brings the chat back). A group is left — or, for its owner,
+  // deleted for everyone.
+  async function deleteConversation(g) {
+    const kind = g.kind || 'group';
+    const owner = g.myRole === 'owner';
+    const question = kind === 'dm' ? `Delete your conversation with ${g.name}?\n\nIt’s removed from your Messages only — ${g.name} still has their copy. If either of you writes again, a new conversation starts.`
+      : kind === 'admin' ? 'Delete your conversation with PokéFolio Admin?\n\nIt’s removed from your Messages. Your warning history is still kept by the admins.'
+        : owner ? `Delete “${g.name}” for everyone?\n\nThe chat, photos and leaderboard are removed for all ${g.members.length} member${g.members.length === 1 ? '' : 's'}. This can’t be undone.`
+          : `Leave “${g.name}”?\n\nIt’s removed from your Messages. You can rejoin later with an invite code.`;
+    if (!confirm(question)) return;
+    try {
+      if (kind === 'dm' || kind === 'admin') await api(`/api/groups/${g.id}/hide`, { method: 'POST' });
+      else if (owner) await api(`/api/groups/${g.id}`, { method: 'DELETE' });
+      else await api(`/api/groups/${g.id}/leave`, { method: 'POST' });
+      toast(kind === 'dm' || kind === 'admin' ? 'Conversation deleted' : owner ? 'Group deleted' : 'You left the group');
+      closeGroup();
+      groups = groups.filter((x) => x.id !== g.id);
+      renderGroupList();
+      refreshGroupList();
+    } catch (e) {
+      toast(e.message || 'Couldn’t delete it — try again');
+    }
+  }
+
   function closeGroup() {
     stopChatPolling();
     openGroup = null;
@@ -3124,12 +3150,16 @@
         ${g.kind === 'admin' ? `${gAvatar(g)}<div class="g-title"><h3>PokéFolio Admin</h3><small>Official messages from the PokéFolio team</small></div>`
     : g.kind === 'dm' && g.other ? `<button class="g-who" data-prof="${esc(g.other.id)}">${gAvatar(g)}<span class="g-title"><h3>${esc(g.name)}</h3><small>Direct message · view profile</small></span></button>` : `${gAvatar(g)}
         <div class="g-title"><h3>${esc(g.name)}</h3><small>${g.members.length} member${g.members.length === 1 ? '' : 's'}</small></div>`}
+        <button class="icon-btn g-delete" id="gDelete" title="${g.kind === 'dm' || g.kind === 'admin' ? 'Delete conversation' : g.myRole === 'owner' ? 'Delete group' : 'Leave group'}" aria-label="${g.kind === 'dm' || g.kind === 'admin' ? 'Delete conversation' : g.myRole === 'owner' ? 'Delete group' : 'Leave group'}">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+        </button>
       </div>
       ${g.kind === 'dm' || g.kind === 'admin' ? '' : `<div class="g-tabs" role="tablist">
         ${[['chat', 'Chat'], ['board', 'Leaderboard'], ['members', 'Members']].map(([k, l]) => `<button role="tab" data-gtab="${k}" class="${openGroup.tab === k ? 'active' : ''}">${l}</button>`).join('')}
       </div>`}
       <div class="g-body" id="gBody"></div>`;
     $('#gBack').addEventListener('click', closeGroup);
+    $('#gDelete').addEventListener('click', () => deleteConversation(g));
     $$('[data-gtab]').forEach((b) => b.addEventListener('click', () => { openGroup.tab = b.dataset.gtab; renderGroupPane(); }));
     if (g.kind === 'dm' || g.kind === 'admin') openGroup.tab = 'chat';
     if (openGroup.tab === 'chat') renderChat();

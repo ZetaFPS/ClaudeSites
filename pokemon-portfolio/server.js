@@ -114,7 +114,9 @@ async function api(req, res, url) {
   const method = req.method;
   if (method !== 'GET' && method !== 'HEAD') {
     checkOrigin(req);
-    if (!/^application\/json/i.test(req.headers['content-type'] || '')) throw httpError(415, 'Expected JSON.');
+    // Bodies must be JSON; a request without one (e.g. most DELETEs) is fine.
+    const hasBody = +(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
+    if (hasBody && !/^application\/json/i.test(req.headers['content-type'] || '')) throw httpError(415, 'Expected JSON.');
   }
 
   // --- status: is account storage permanent? ---

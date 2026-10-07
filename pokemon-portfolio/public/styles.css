@@ -1410,3 +1410,5 @@ select::-ms-expand { display: none; }
 #rmWarnFields { display: grid; gap: 12px; }
 #rmWarnFields[hidden] { display: none; }
 @media (min-width: 1024px) { .sheet:has(.adm-user) { max-width: 760px; } }
+.group-head .g-delete { margin-left: auto; flex: none; }
+.group-head .g-delete:hover { color: var(--down); border-color: rgba(255, 77, 109, .45); }
