@@ -283,6 +283,22 @@ async function tpGroupFor(set) {
   }
   return best;
 }
+// A photo of the set's sealed booster pack from TCGplayer (pack simulator). Prefers the plain
+// "<Set> Booster Pack" product over boxes, bundles, blisters and art variants.
+function tpBoosterImages(set) {
+  return cached(`tcgcsv:booster:${slug(set.name)}`, 24 * HOUR, async () => {
+    const g = await tpGroupFor({ name: set.name, releaseDate: set.released || set.releaseDate });
+    if (!g) return [];
+    const packs = (await tpProducts(g.groupId)).filter((p) => /\bbooster pack\b/i.test(p.name) && !tpExt(p, 'Number')
+      && !/\b(case|box|bundle|display|blister|sleeved|lot|code|collection|tin|half|elite|build|battle|art set|online)\b/i.test(p.name) && TP_IMG.test(p.imageUrl || ''));
+    const score = (p) => (/\[|\(/.test(p.name) ? 1 : 0); // plain names first, art variants after
+    return packs.sort((a, b) => score(a) - score(b)).map((p) => {
+      const id = p.imageUrl.match(TP_IMG)[1];
+      return [`https://tcgplayer-cdn.tcgplayer.com/product/${id}_in_1000x1000.jpg`, p.imageUrl];
+    });
+  });
+}
+
 // Fill a card's missing picture and prices (and its printed number) from TCGplayer.
 async function withTcgplayer(card) {
   const g = await tpGroupFor(card.set);
@@ -577,10 +593,85 @@ const pcQueries = (info) => (info.japanese
   ? [`${info.name} ${info.number} japanese`, `${info.name} japanese ${normNum(info.number)}`]
   : [`${info.name} ${info.setName} ${info.number}`, `${info.name} ${info.number}`]);
 
+// Every graded result PriceCharting gives us is also saved in the database (one "kv" document),
+// so when PriceCharting can't be reached — or after a restart — cards keep their last real graded
+// prices (marked stale with the date) instead of dropping to estimates.
+const pcSaved = { map: new Map(), store: null, dirty: false, timer: null };
+const PC_SAVED_KEY = 'pricecharting-graded';
+const PC_SAVED_MAX = 20000;
+async function attachStore(store) {
+  pcSaved.store = store;
+  try {
+    const doc = await store.getKv(PC_SAVED_KEY);
+    for (const [k, v] of Object.entries(doc || {})) pcSaved.map.set(k, v);
+  } catch (e) { console.warn(`Couldn't load saved graded prices: ${e.message}`); }
+}
+function savePc(key, value) {
+  pcSaved.map.delete(key);
+  pcSaved.map.set(key, { value, at: Date.now() });
+  while (pcSaved.map.size > PC_SAVED_MAX) pcSaved.map.delete(pcSaved.map.keys().next().value);
+  if (!pcSaved.store || pcSaved.timer) return;
+  pcSaved.timer = setTimeout(() => {
+    pcSaved.timer = null;
+    pcSaved.store.setKv(PC_SAVED_KEY, Object.fromEntries(pcSaved.map)).catch((e) => console.warn(`Couldn't save graded prices: ${e.message}`));
+  }, 30e3);
+  pcSaved.timer.unref?.();
+}
+
+// Write any not-yet-saved graded prices now (server shutting down, e.g. for a redeploy).
+async function flushSavedPrices() {
+  if (!pcSaved.timer || !pcSaved.store) return;
+  clearTimeout(pcSaved.timer);
+  pcSaved.timer = null;
+  await pcSaved.store.setKv(PC_SAVED_KEY, Object.fromEntries(pcSaved.map)).catch(() => {});
+}
+
 function priceCharting(info) {
   if (!info.name || !info.number) return Promise.resolve(null);
   const key = `pc2:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
-  return cached(key, 12 * HOUR, () => (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info)));
+  return cached(key, 12 * HOUR, async () => {
+    try {
+      const r = await (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info));
+      if (r) savePc(key, r);
+      return r;
+    } catch (e) {
+      const saved = pcSaved.map.get(key);
+      if (saved) {
+        // Serve the saved prices, but try PriceCharting again in a few minutes.
+        setTimeout(() => cache.delete(key), 5 * 60e3).unref?.();
+        return { ...saved.value, staleSince: saved.at, staleReason: e.message };
+      }
+      throw e;
+    }
+  });
+}
+
+// Admin diagnostics: one live request to PriceCharting (ignoring any pause), reporting exactly what
+// came back, so a block or a page change can be told apart.
+async function pcDiagnose() {
+  const tests = [
+    ['Product page', `${PC}/game/pokemon-base-set/charizard-4`],
+    ['Search', `${PC}/search-products?type=prices&q=${encodeURIComponent('Charizard Base Set 4')}`],
+  ];
+  const out = [];
+  for (const [label, url] of tests) {
+    const t0 = Date.now();
+    try {
+      const res = await fetchWithTimeout(url, { headers: { Accept: 'text/html' }, redirect: 'follow' }, 20000);
+      const html = await res.text();
+      const parsed = parseProductPage(html);
+      out.push({
+        label, url, status: res.status, ms: Date.now() - t0, finalUrl: res.url,
+        title: (html.match(/<title>([^<]*)<\/title>/i)?.[1] || '').trim().slice(0, 120),
+        botCheck: /<title>\s*Just a moment|challenge-platform|cf-chl-/i.test(html),
+        pricesFound: Object.keys(parsed.prices).length, psa10: parsed.prices['PSA 10'] ?? null, bytes: html.length,
+        server: res.headers.get('server'), cfRay: res.headers.get('cf-ray'),
+      });
+    } catch (e) {
+      out.push({ label, url, error: e.message, ms: Date.now() - t0 });
+    }
+  }
+  return { tokenSet: !!process.env.PRICECHARTING_TOKEN, status: pcStatus(), savedGradedPrices: pcSaved.map.size, tests: out };
 }
 
 /* ---------------- Cardmarket (EUR) + exchange rate ---------------- */
@@ -738,7 +829,7 @@ async function fullPrices(id, variant) {
     if (pc.prices['PSA 10'] != null && ungraded != null && pc.prices['PSA 10'] < ungraded) {
       warnings.push('PSA 10 is listed below the ungraded price, which usually means very few graded sales.');
     }
-    graded = { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices, warnings };
+    graded = { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices, warnings, staleSince: pc.staleSince || null };
   }
   // Fill grades with no recent sales (or no PriceCharting match at all) with clearly-labelled estimates.
   const vintage = /^(199\d|200[0-2])/.test(String(card.set?.releaseDate || ''));
@@ -858,5 +949,6 @@ async function pcCardImage(id) {
 
 module.exports = {
   search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, pcCardImage, parseId, boosterImage, PC_IMG, pcStatus,
+  attachStore, flushSavedPrices, pcDiagnose, tpBoosterImages,
   _test: { packImageFrom, scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
 };

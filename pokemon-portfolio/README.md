@@ -50,6 +50,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   graded prices are estimates for now, and `/api/health` shows `priceCharting.lastError` and when
   lookups resume. Card-photo lookups on PriceCharting are limited to English cards from sets
   released in the last year, and a miss is remembered for 6 hours.
+  Every graded result from PriceCharting is also saved in the database, so if PriceCharting can't be
+  reached (or right after a restart) a card shows its last real graded prices, marked with when they
+  were saved, instead of dropping to estimates. **Admin → Price sources → Test PriceCharting now**
+  makes a live request from the server and shows what came back (HTTP status, bot-check page,
+  prices found) — the quickest way to tell a block from a page change.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
   and shrunk on your device before upload, stored in the database, and shown in the top bar, on
   profiles and marketplace listings, and in chats and member lists.
@@ -75,7 +80,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   Rare Holo or Double Rare slot, and at most one hit per pack at the published odds (Double Rare
   1/4, Illustration Rare 1/6, Classic Collection 1/11, SIR 1/20, Futuristic Rare 1/103, RGB 1/4000).
   The pack shown is the set's real booster pack: the official pack artwork from TCGdex (a random
-  one of the set's pack designs each time), else a photo from PriceCharting (background cut away),
+  one of the set's pack designs each time) — after first trying TCGplayer's photo of the set's sealed
+  booster pack (via tcgcsv.com, plain pack designs before art variants) — else a photo from
+  PriceCharting (background cut away),
   else a drawn pack. Hits are revealed by a slower swipe and land with a glow and burst. A card
   named ex/GX/V/VMAX/VSTAR can only come from the rare slot even if the data mislabels its rarity,
   so packs never get several ex like they can't in real life (≈1 in 4 packs has an ex; 2 ex —

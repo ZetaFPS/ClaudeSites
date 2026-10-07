@@ -1882,6 +1882,7 @@
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
       ${gradedError ? '<p class="warn">⚠ PriceCharting couldn’t be reached just now, so these are estimates. Real graded sales will show again once it’s back.</p>' : ''}
+      ${graded.staleSince ? `<p class="warn">⚠ PriceCharting couldn’t be reached just now — these are the last graded prices saved for this card (${esc(timeAgo(graded.staleSince))}).</p>` : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
       ${est.size ? `<p class="est-note"><b>≈ Estimated:</b> ${[...est].map(gradeLabel).join(', ')} ${est.size === 1 ? 'has' : 'have'} no recent graded sales, so ${est.size === 1 ? 'it’s' : 'they’re'} estimated ${graded.estimateBasis === 'graded' ? 'from this card’s real graded sales' : 'from its raw price'} using typical PSA premiums. Treat as a rough guide.</p>` : ''}
       <p class="note">${graded.source === 'Estimate'
@@ -2808,10 +2809,39 @@
       $('#admStats').innerHTML = [['Accounts', c.users], ['Online now', c.online], ['Banned', c.banned], ['Listings', c.products], ['Warnings sent', c.warnings]]
         .map(([k, v]) => `<div class="info glass"><div class="k">${k}</div><div class="v num">${v}</div></div>`).join('');
       if (adm.tab === 'warnings') paintAdminList();
+      paintPriceCheck();
     } catch (e) {
       if (e.status === 404) { user = { ...user, isAdmin: false }; paintAdminAccess(); }
     }
   }
+  // "Price sources": a live test request to PriceCharting from the server, with what came back.
+  let priceCheck = null;
+  function paintPriceCheck() {
+    let box = $('#admPrices');
+    if (!box) {
+      box = Object.assign(document.createElement('div'), { id: 'admPrices', className: 'adm-prices glass' });
+      $('#admStats').after(box);
+    }
+    const d = priceCheck;
+    const rows = d?.tests?.map((t) => `<li class="${t.error || t.status >= 400 || t.botCheck || (t.label === 'Product page' && !t.pricesFound) ? 'bad' : 'good'}">
+        <b>${esc(t.label)}</b> ${t.error ? `failed: ${esc(t.error)}` : `HTTP ${t.status}${t.botCheck ? ' · bot-check page' : ''} · ${t.pricesFound} price${t.pricesFound === 1 ? '' : 's'} found${t.psa10 != null ? ` (PSA 10 ${money(t.psa10)})` : ''} · “${esc(t.title || 'no title')}”`} <small>${t.ms} ms${t.server ? ` · ${esc(t.server)}` : ''}${t.cfRay ? ' · Cloudflare' : ''}</small></li>`).join('') || '';
+    box.innerHTML = `
+      <div class="adm-prices-head"><span><b>Price sources</b><small>Graded prices come from PriceCharting${d?.tokenSet ? ' (API token set)' : ' (public pages — no API token)'}.</small></span>
+        <button class="btn sm" id="pcTest">${d === 'loading' ? 'Testing…' : 'Test PriceCharting now'}</button></div>
+      ${d && d !== 'loading' ? `
+        <p class="muted">${d.status.ok ? 'Lookups running' : `Lookups paused until ${esc(new Date(d.status.pausedUntil).toLocaleTimeString())}`}
+          · last success ${d.status.lastSuccessAt ? esc(timeAgo(Date.parse(d.status.lastSuccessAt))) : 'never (since restart)'}
+          ${d.status.lastError ? ` · last error: ${esc(d.status.lastError)}` : ''} · ${d.savedGradedPrices} saved graded prices</p>
+        <ul class="adm-tests">${rows}</ul>` : ''}`;
+    $('#pcTest').disabled = d === 'loading';
+    $('#pcTest').addEventListener('click', async () => {
+      priceCheck = 'loading';
+      paintPriceCheck();
+      try { priceCheck = await api('/api/admin/diagnostics/prices'); } catch (e) { priceCheck = null; toast(e.message || 'Test failed'); }
+      paintPriceCheck();
+    });
+  }
+
   async function loadAdminList(reset) {
     if (reset) { adm.items = []; adm.more = false; }
     if (adm.tab === 'warnings') { paintAdminList(); return; }

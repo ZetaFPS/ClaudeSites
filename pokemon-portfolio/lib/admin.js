@@ -25,7 +25,7 @@ const REASONS = {
 const PAGE = 30;
 const ID = /^[0-9a-f-]{36}$/;
 
-function createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live }) {
+function createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live, prices }) {
   const words = (q) => String(q || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6).map((w) => w.slice(0, 60));
   const offsetOf = (url) => Math.min(100000, Math.max(0, parseInt(url.searchParams.get('offset'), 10) || 0));
 
@@ -84,6 +84,12 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
         counts: { ...counts, online: live.online() }, reasons: REASONS,
         recentWarnings: recent.slice(0, 15).map((w) => ({ ...w, user: names.get(w.userId) ? { id: w.userId, name: names.get(w.userId).name, username: names.get(w.userId).username } : null })),
       });
+      return true;
+    }
+
+    // GET /api/admin/diagnostics/prices — a live test request to PriceCharting from this server
+    if (section === 'diagnostics' && id === 'prices' && method === 'GET') {
+      send(res, 200, await prices.pcDiagnose());
       return true;
     }
 

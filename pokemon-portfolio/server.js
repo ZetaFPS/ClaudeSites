@@ -339,8 +339,11 @@ async function api(req, res, url) {
   if (pi && method === 'GET') {
     const set = (packs.list() || []).find((x) => x.id === pi[1]);
     if (!set) throw httpError(404, 'Unknown set.');
-    // 1. Official booster artwork from TCGdex — one of the set's pack designs at random.
-    const designs = (await packs.boosterArt(set.id).catch(() => [])).sort(() => Math.random() - 0.5);
+    // 1. A photo of the real sealed booster pack from TCGplayer (plain pack designs first),
+    // 2. otherwise TCGdex's booster artwork — one of the set's pack designs at random.
+    const photos = await prices.tpBoosterImages(set).catch(() => []);
+    const art = (await packs.boosterArt(set.id).catch(() => [])).sort(() => Math.random() - 0.5);
+    const designs = [...photos, ...art];
     for (const candidates of designs) {
       for (const c of candidates) {
         let target;
@@ -350,7 +353,7 @@ async function api(req, res, url) {
         if (hit) return sendImage(res, hit, designs.length > 1 ? 0 : 86400);
       }
     }
-    // 2. A photo of the sealed pack from PriceCharting.
+    // 3. A photo of the sealed pack from PriceCharting.
     const u = await prices.boosterImage(set.name).catch(() => null);
     if (!u || !prices.PC_IMG.test(u)) throw httpError(404, 'No pack photo.');
     const hit = await fetchImage(new URL(u)).catch(() => null);
@@ -576,11 +579,12 @@ const storagePersistent = () => store.kind === 'postgres' || process.env.PERSIST
 
 async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
+  await prices.attachStore(store); // saved graded prices survive restarts and PriceCharting outages
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
   groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit, live });
   socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live, isAdmin });
-  adminApi = createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live });
+  adminApi = createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live, prices });
   catalog = createCatalog({ store });
   packs = createPacks({ catalog });
   visualIndex = createVisualIndex({
@@ -599,7 +603,7 @@ async function start() {
     }
     console.log(`  graded prices: ${process.env.PRICECHARTING_TOKEN ? 'PriceCharting API (token set)' : 'PriceCharting public pages (set PRICECHARTING_TOKEN to use the official API)'}`);
   });
-  const shutdown = async () => { server.close(); await store.close().catch(() => {}); process.exit(0); };
+  const shutdown = async () => { server.close(); await prices.flushSavedPrices(); await store.close().catch(() => {}); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
