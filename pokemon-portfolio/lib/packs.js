@@ -154,8 +154,10 @@ const CEL30_HITS = [
   ['FUR', (r) => /futuristic/.test(r), 1 / 103, 'S'],
   ['RGB', (r) => /\brgb\b|black|gold|hyper|secret/.test(r), 1 / 4000, 'S'],
 ];
-function cel30Pools(cards) {
+function cel30Pools(cards, classic = []) {
   const g = { PK: [], CU: [], RARE: [], hits: {} };
+  // The separately listed "Classic Collection" cards are that hit, whatever rarity they're given.
+  if (classic.length) g.hits.CC = classic.map((c) => (c.rarity ? c : { ...c, rarity: 'Classic Collection' }));
   for (const c of cards) {
     const r = String(c.rarity || '').toLowerCase();
     // The 30 anniversary Pikachu ("Pikachu Rare") only ever appear in the Pikachu slot.
@@ -169,8 +171,8 @@ function cel30Pools(cards) {
   }
   return g;
 }
-function openCel30(cards) {
-  const g = cel30Pools(cards);
+function openCel30(cards, classic) {
+  const g = cel30Pools(cards, classic);
   const roll = Math.random();
   let acc = 0, hit = null;
   for (const [key, , p] of CEL30_HITS) {
@@ -306,7 +308,8 @@ function createPacks({ catalog, log = console }) {
   // name, then each card by number). Saved into the catalogue.
   function prepare(entry) {
     const { set } = entry;
-    const all = allCards(entry);
+    // Only the set's own cards: a merged subset is pulled as a whole, and its numbers are its own.
+    const all = entry.cards;
     if (missingShare(all) <= 0.05) return null;
     if (preparing.has(set.id)) return preparing.get(set.id);
     const p = (async () => {
@@ -345,13 +348,13 @@ function createPacks({ catalog, log = console }) {
     const entry = s.byId.get(setId);
     if (!entry) return { error: 'unknown set' };
     const { set } = entry;
-    if (missingShare(allCards(entry)) > 0.05) {
+    if (missingShare(entry.cards) > 0.05) {
       if (prepError.has(set.id) && !preparing.has(set.id)) return { error: 'no-rarities' };
       prepare(entry);
       return { preparing: true };
     }
     const head = { id: set.id, name: set.name, released: set.released, logo: set.logo, format: { era: set.format.era, size: set.format.size, note: set.format.note } };
-    if (set.format.special === 'cel30') return { set: head, cards: openCel30(entry.cards).map(({ c, pull }) => ({ ...liteCard(c), pull })) };
+    if (set.format.special === 'cel30') return { set: head, cards: openCel30(entry.cards, set.subset?.cards).map(({ c, pull }) => ({ ...liteCard(c), pull })) };
     const pools = {};
     for (const c of entry.cards) (pools[cardTier(c)] ||= []).push(c);
     if (set.subset) pools.SUB = set.subset.cards;
@@ -384,7 +387,7 @@ function createPacks({ catalog, log = console }) {
     const all = allCards(entry);
     const rarities = {};
     for (const c of all) rarities[c.rarity || 'Unknown'] = (rarities[c.rarity || 'Unknown'] || 0) + 1;
-    const needs = missingShare(all) > 0.05;
+    const needs = missingShare(entry.cards) > 0.05;
     if (needs && !(prepError.has(setId) && !preparing.has(setId))) prepare(entry);
     return {
       ready: !needs, preparing: preparing.has(setId), error: needs && prepError.has(setId) && !preparing.has(setId) ? 'no-rarities' : null,

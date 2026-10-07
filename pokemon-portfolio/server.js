@@ -427,6 +427,12 @@ async function cardImage(res, id, size) {
       return sendImage(res, hit, 86400);
     }
   }
+  const pc = await prices.pcCardImage(id).catch(() => null);
+  const hit = pc && prices.PC_IMG.test(pc) ? await fetchImage(new URL(pc)).catch(() => null) : null;
+  if (hit) {
+    imgWinner.set(key, pc);
+    return sendImage(res, hit, 86400);
+  }
   throw httpError(404, 'No picture found for this card.');
 }
 async function fetchImage(target) {

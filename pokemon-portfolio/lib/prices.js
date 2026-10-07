@@ -341,14 +341,16 @@ const PRINTING_WORDS = new Set(['1st', 'edition', 'shadowless', 'unlimited', 're
 
 // Score a PriceCharting product (console slug + product slug) against our card.
 // Returns -1 unless name, number, set and printing all match.
-function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant, japanese = false }, { relaxed = false } = {}) {
+function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant, japanese = false }, { relaxed = false, anyNumber = false } = {}) {
   consoleSlug = slug(consoleSlug); productSlug = slug(productSlug);
   if (!consoleSlug.startsWith('pokemon') || /chinese|korean|german|french|italian|spanish/.test(consoleSlug)) return -1;
   // Japanese and English printings are different cards with very different prices.
   if (/japanese/.test(consoleSlug) !== !!japanese) return -1;
   const segs = productSlug.split('-');
-  if (!number || normNum(segs.at(-1)) !== normNum(number)) return -1;
-  const base = segs.slice(0, -1).join('-');
+  // anyNumber: the set's numbering may not line up between sites yet (brand-new sets), so the
+  // product's number is ignored — callers then demand a near-exact set and a unique name.
+  if (anyNumber) { if (/\d/.test(segs.at(-1))) segs.pop(); } else if (!number || normNum(segs.at(-1)) !== normNum(number)) return -1;
+  const base = anyNumber ? segs.join('-') : segs.slice(0, -1).join('-');
   const nameSlug = slug(name);
   if (!nameSlug || (base !== nameSlug && !base.startsWith(`${nameSlug}-`))) return -1;
   const tags = base.slice(nameSlug.length);
@@ -360,7 +362,7 @@ function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant
   const ours = words(setName);
   const theirs = words(consoleSlug);
   const hit = ours.filter((w) => theirs.includes(w)).length;
-  if (!relaxed && (!ours.length || hit / ours.length < 0.5)) return -1;
+  if (!relaxed && (!ours.length || hit / ours.length < (anyNumber ? 0.75 : 0.5))) return -1;
   // Prefer exact set names and plain products over tagged ones ("[Shadowless]", "[Cosmos Holo]").
   return 10 + hit * 2 - (theirs.length - hit) - tags.split('-').filter(Boolean).length * 2;
 }
@@ -369,7 +371,9 @@ function scoreProduct(consoleSlug, productSlug, { name, setName, number, variant
 // Strict: name, number, printing AND set must match. If nothing passes, accept a match that ignores
 // the set name only when exactly one product in the results has that exact name, number and
 // printing — set names differ a lot between sites (promos, special sets), but a unique
-// name+number is still unambiguous.
+// name+number is still unambiguous. Last, for brand-new sets whose card numbers don't line up
+// between sites yet (info.recent): accept the only product with that exact name in a closely
+// matching set.
 function pickProduct(cands, info) {
   let best = null, bestScore = -1;
   for (const c of cands) {
@@ -379,7 +383,11 @@ function pickProduct(cands, info) {
   if (best) return best;
   const loose = new Map();
   for (const c of cands) if (scoreProduct(c.console, c.product, info, { relaxed: true }) >= 0) loose.set(`${slug(c.console)}/${slug(c.product)}`, c);
-  return loose.size === 1 ? { ...[...loose.values()][0], relaxed: true } : null;
+  if (loose.size === 1) return { ...[...loose.values()][0], relaxed: true };
+  if (loose.size || !info.recent) return null;
+  const byName = new Map();
+  for (const c of cands) if (scoreProduct(c.console, c.product, info, { anyNumber: true }) >= 0) byName.set(`${slug(c.console)}/${slug(c.product)}`, c);
+  return byName.size === 1 ? { ...[...byName.values()][0], relaxed: true, nameOnly: true } : null;
 }
 
 async function pcViaApi(info) {
@@ -394,7 +402,7 @@ async function pcViaApi(info) {
       return {
         title: `${p['product-name']} · ${p['console-name']}`,
         url: `${PC}/game/${slug(p['console-name'])}/${slug(p['product-name'])}`,
-        prices,
+        prices, image: /^https:\/\//.test(p['image-url'] || '') ? p['image-url'] : null,
       };
     }
   }
@@ -451,7 +459,7 @@ async function pcViaPage(info) {
       // result) — use it only if it's the right card.
       if (pickProduct([{ console: decodeURIComponent(direct[1]), product: decodeURIComponent(direct[2]) }], info)) {
         const parsed = parseProductPage(html);
-        if (Object.keys(parsed.prices).length) return { ...parsed, url };
+        if (Object.keys(parsed.prices).length) return { ...parsed, url, image: packImageFrom(html, { ogFirst: true }) };
       }
       continue;
     }
@@ -461,7 +469,7 @@ async function pcViaPage(info) {
     if (productUrl) {
       const page = await pcFetchPage(productUrl);
       const parsed = parseProductPage(page.html);
-      if (Object.keys(parsed.prices).length) return { ...parsed, url: page.url };
+      if (Object.keys(parsed.prices).length) return { ...parsed, url: page.url, image: packImageFrom(page.html, { ogFirst: true }) };
     }
   }
   return null;
@@ -474,7 +482,7 @@ const pcQueries = (info) => (info.japanese
 
 function priceCharting(info) {
   if (!info.name || !info.number) return Promise.resolve(null);
-  const key = `pc:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
+  const key = `pc2:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
   return cached(key, 12 * HOUR, () => (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info)));
 }
 
@@ -571,6 +579,8 @@ function cardInfo(card, variant) {
   return {
     id: card.id, name: card.name, setName: card.set?.name || '', number: card.number,
     total: card.set?.printedTotal, variant: variant || defaultVariant(card),
+    // Released in the last year (or undated): its numbering may not match other sites yet.
+    recent: !card.set?.releaseDate || Date.now() - Date.parse(String(card.set.releaseDate).replace(/\//g, '-')) < 365 * 24 * HOUR,
   };
 }
 // Lookup details for the price sources (Japanese cards are looked up by English name).
@@ -650,11 +660,11 @@ async function fullPrices(id, variant) {
 /* ---------------- Booster pack photos (pack simulator) ---------------- */
 // The set's sealed "Booster Pack" product on PriceCharting carries a photo of the real pack.
 const PC_IMG = /^https:\/\/(storage\.googleapis\.com\/images\.pricecharting\.com\/|www\.pricecharting\.com\/)/;
-function packImageFrom(html) {
+function packImageFrom(html, { ogFirst = false } = {}) {
   const og = html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
     || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
   const gcs = html.match(/https:\/\/storage\.googleapis\.com\/images\.pricecharting\.com\/[A-Za-z0-9/_.-]+\.(?:jpe?g|png|webp)/i);
-  for (const u of [gcs?.[0], og?.[1]]) {
+  for (const u of ogFirst ? [og?.[1], gcs?.[0]] : [gcs?.[0], og?.[1]]) {
     if (!u) continue;
     const url = u.replace(/&amp;/g, '&');
     if (PC_IMG.test(url) && !/logo|favicon|default/i.test(url)) return url;
@@ -729,8 +739,16 @@ async function imageCandidates(id, size = 'small') {
   }
   return urls;
 }
+// Last resort when none of those load (brand-new sets the card databases haven't pictured yet):
+// the photo on the card's PriceCharting page.
+async function pcCardImage(id) {
+  const card = await getCard(id).catch(() => null);
+  if (!card) return null;
+  const pc = await priceCharting(await priceInfo(card)).catch(() => null);
+  return pc?.image && PC_IMG.test(pc.image) ? pc.image : null;
+}
 
 module.exports = {
-  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, parseId, boosterImage, PC_IMG,
+  search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, pcCardImage, parseId, boosterImage, PC_IMG,
   _test: { packImageFrom, scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
 };

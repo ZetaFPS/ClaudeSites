@@ -22,7 +22,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   PriceCharting's Japanese listings (looked up by the Pokémon's English name), when it has them.
 - **Card pictures never go missing**: if an image fails to load, the app asks the server, which tries
   every other source for that card — the other size, the Pokémon TCG API's image server, TCGdex (webp,
-  png or jpg) — and shows a neat placeholder only if none has it.
+  png or jpg) and, last, the card's photo on PriceCharting (which pictures brand-new sets, like the
+  30th Celebration Classic Collection, before the card databases do) — and shows a neat placeholder
+  only if none has it.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
@@ -35,7 +37,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
   If a match can't be made on set name (common for promos), a product that is the *only* one with
-  that exact name, number and printing is accepted. Grades with no recent sales (PSA 10/9/8/7) are
+  that exact name, number and printing is accepted. For sets released in the last year, whose card
+  numbers often don't line up between sites yet, a product is also accepted when it is the only card
+  with that exact name in a closely matching set. Grades with no recent sales (PSA 10/9/8/7) are
   **estimated** — scaled from the card's real graded sales when it has some, otherwise from its raw
   price using typical PSA premiums — and always shown as "≈ … est." with a striped bar.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
