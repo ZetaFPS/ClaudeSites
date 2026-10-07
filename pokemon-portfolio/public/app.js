@@ -1846,7 +1846,7 @@
       ? (psaEst ? 'estimate — no recent PSA 10 sales' : `${(psa10 / base).toFixed(1)}× ungraded`)
       : (loading ? 'Fetching graded sales…' : 'No graded sales found');
     const psaSrc = $('#psaValue')?.closest('.ph')?.querySelector('.src');
-    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : graded?.source === 'PokéFolio database' ? 'PokéFolio database' : 'PriceCharting';
+    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : graded?.source === 'PokéFolio' ? 'PokéFolio' : 'PriceCharting';
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
   }
@@ -1882,7 +1882,7 @@
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
       ${gradedError ? '<p class="warn">⚠ PriceCharting couldn’t be reached just now, so these are estimates. Real graded sales will show again once it’s back.</p>' : ''}
-      ${graded.source === 'PokéFolio database' ? `<p class="db-note"><b>PokéFolio database</b> · ${graded.origin === 'manual'
+      ${graded.source === 'PokéFolio' ? `<p class="db-note"><b>PokéFolio</b> · ${graded.origin === 'manual'
     ? `graded prices added by PokéFolio ${esc(timeAgo(graded.savedAt))}${graded.note ? ` — ${esc(graded.note)}` : ''}`
     : `last graded prices saved from PriceCharting ${esc(timeAgo(graded.savedAt))}`}. Live PriceCharting prices replace these as soon as they’re available.</p>` : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
@@ -2867,7 +2867,7 @@
   const reasonName = (k) => adm.overview?.reasons?.[k] || k;
   const reasonOptions = (sel) => Object.entries(adm.overview?.reasons || { other: 'Breaking the community rules' })
     .map(([k, v]) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
-  /* ---- Card prices: graded prices admins type in (fallback "PokéFolio database") ---- */
+  /* ---- Card prices: graded prices admins type in (fallback "PokéFolio") ---- */
   const cp = { saved: [], grades: ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7', 'Ungraded'], results: null, loading: false, req: 0 };
   const gradeName = (g) => (g === 'Ungraded' ? 'Raw (ungraded)' : g.replace('Grade', 'PSA'));
   async function loadCardPriceAdmin() {
@@ -2906,7 +2906,7 @@
         : cp.results?.length ? `<h4 class="profile-sub">Cards matching “${esc(adm.q)}”</h4><div class="adm-listings">${cp.results.slice(0, 30).map((c) => row(c, savedIds.get(c.id))).join('')}</div>`
           : `<div class="groups-none"><b>No cards found</b><span>Try the name with its number, like “Pikachu 58/102”.</span></div>`;
     } else {
-      html = `<p class="note">Search for a card above to add its graded prices. They’re used only when PriceCharting has no live prices for the card, and shown as coming from the <b>PokéFolio database</b>.</p>
+      html = `<p class="note">Search for a card above to add its graded prices. They’re used only when PriceCharting has no live prices for the card, and shown as coming from <b>PokéFolio</b>.</p>
         <h4 class="profile-sub">Saved prices · ${cp.saved.length}</h4>
         ${cp.saved.length ? `<div class="adm-listings">${cp.saved.map((e) => row({ id: e.id, ...e.card }, e)).join('')}</div>` : '<div class="groups-none"><b>No prices added yet</b><span>Find a card to add its PSA prices.</span></div>'}`;
     }
@@ -2926,7 +2926,7 @@
         <h3 id="sheetTitle">Graded prices</h3>
         <div class="adm-listing glass"><span class="adm-thumb card"><img ${imgAttrs({ id: card.id, images: { small: card.image } })} alt=""></span>
           <span class="adm-main"><b>${esc(card.name)}</b><small>${esc(card.set || '')}${card.number ? ` · #${esc(card.number)}` : ''}${card.lang === 'ja' ? ' · Japanese' : ''}</small></span></div>
-        <p class="muted">Used only when PriceCharting has no live prices for this card; shown as the <b>PokéFolio database</b>. Leave grades you don’t know empty — they’re estimated from the ones you enter.</p>
+        <p class="muted">Used only when PriceCharting has no live prices for this card; shown as coming from <b>PokéFolio</b>. Leave grades you don’t know empty — they’re estimated from the ones you enter.</p>
         <div class="cp-grid">${cp.grades.map((g) => `
           <div class="field"><label for="cp-${esc(g.replace(/\s/g, ''))}">${esc(gradeName(g))} (USD)</label>
             <input id="cp-${esc(g.replace(/\s/g, ''))}" data-grade="${esc(g)}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—" value="${saved?.prices?.[g] ?? ''}"></div>`).join('')}</div>

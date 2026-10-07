@@ -612,7 +612,7 @@ async function attachStore(store) {
 }
 
 // Graded prices typed in by admins, per card id. A fallback only: used when PriceCharting has no
-// live result for the card (unreachable, or no match), and shown as "PokéFolio database".
+// live result for the card (unreachable, or no match), and shown as "PokéFolio".
 const MANUAL_KEY = 'manual-graded';
 const MANUAL_GRADES = ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7', 'Ungraded'];
 const manual = new Map(); // cardId -> { prices, note, by, at, card: { name, set, number, image } }
@@ -849,7 +849,7 @@ async function fullPrices(id, variant) {
     }
     graded = { source: 'PriceCharting', url: pc.url, title: pc.title, prices: pc.prices, warnings, staleSince: pc.staleSince || null };
     // Saved copies of PriceCharting prices come from our own database.
-    if (pc.staleSince) Object.assign(graded, { source: 'PokéFolio database', origin: 'pricecharting', savedAt: pc.staleSince });
+    if (pc.staleSince) Object.assign(graded, { source: 'PokéFolio', origin: 'pricecharting', savedAt: pc.staleSince });
   }
   // No live PriceCharting result: an admin-entered price (the newer of it and any saved copy) is
   // used instead. It never replaces live PriceCharting prices.
@@ -857,7 +857,7 @@ async function fullPrices(id, variant) {
   const typed = manual.get(id);
   if (typed && (!graded || (graded.staleSince && typed.at > graded.staleSince))) {
     graded = {
-      source: 'PokéFolio database', origin: 'manual', savedAt: typed.at, note: typed.note || '', prices: { ...typed.prices }, warnings: [],
+      source: 'PokéFolio', origin: 'manual', savedAt: typed.at, note: typed.note || '', prices: { ...typed.prices }, warnings: [],
       url: `${PC}/search-products?type=prices&q=${encodeURIComponent(pcQueries({ ...info, name: info.name || card.name })[0])}`, title: null,
     };
     fromDb = true;
