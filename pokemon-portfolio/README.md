@@ -111,6 +111,27 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   on your device), a title, a price and a description; edit or delete them any time (up to 60
   listings). There's no checkout: a buyer taps **Message seller**, which
   opens your chat with a message about the listing ready to send.
+- **Live updates** — while the app is open it keeps a live connection (Server-Sent Events,
+  `GET /api/events`) to the server. New messages pop up in the corner (tap to open the chat), the
+  Messages/Friends badges and the browser tab's `(n)` count update instantly, friend requests pop
+  up too, and a collection changed on another device reloads by itself. Market prices are re-checked
+  every 5 minutes while the app is visible (and when you come back to it). Whenever your portfolio
+  value, card count, cost basis or P/L changes, the number counts up or down to the new value and
+  flashes green or red; changed card prices in the list flash too (no motion with "reduce motion").
+- **Admin panel** — for the accounts listed in `ADMIN_EMAILS` only (everyone else never sees it,
+  and its API answers 404). Find accounts by name, @username or email, or listings by title,
+  description or seller, and:
+  - **Warn** an account, choosing a reason (inappropriate listing, scam, profile picture, name,
+    description, messages, spam, other) and an optional note. The warning arrives in that person's
+    **Messages** in a read-only conversation from **"Admin"** (never your own name), pops up live
+    if they're online, and is kept in the account's warning history.
+  - **Remove a listing**, optionally with a warning that names the listing.
+  - **Remove a profile picture** or **clear a description**.
+  - **Ban** (with a reason): they're signed out everywhere at once, can't sign in (they're told
+    the reason), and their profile and listings disappear. **Unban** restores everything.
+  - **Delete an account** permanently, with its collection, listings, friends and picture; groups it
+    owned pass to their longest-standing member.
+  Admins can't ban or delete themselves or other admins. The Warnings tab lists recent warnings.
 - **Pre-grading (beta, still in development)** — upload photos of the front and back for a PSA-style estimate with sub-grades.
   Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as
   straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots
@@ -195,6 +216,7 @@ HTTPS for phones.
 | Variable | Purpose |
 |---|---|
 | `PORT` | Port to listen on (default `3000`). |
+| `ADMIN_EMAILS` | Comma-separated emails of the accounts that get the **Admin** panel, e.g. `you@example.com`. Sign up with that email (or use your existing account's), set this in your host's environment settings and redeploy; sign out and back in if the panel doesn't appear. |
 | `DATABASE_URL` | **Recommended for any hosted site.** PostgreSQL connection string; accounts and portfolios are stored there and survive redeploys. |
 | `DATA_DIR` | Where accounts are stored when there's no `DATABASE_URL` (default `./data`). |
 | `PRICECHARTING_TOKEN` | Recommended. Your [PriceCharting API](https://www.pricecharting.com/api-documentation) token (paid subscription). When set, graded prices come from the official API. Without it, the server reads PriceCharting's public product pages, which is slower and can break if their page layout changes. |
@@ -229,6 +251,8 @@ lib/prices.js    Pokémon TCG API, TCGdex and PriceCharting lookups with caching
 lib/leaderboard.js  server-side collection values (profiles, group leaderboards)
 lib/groups.js    groups API: invites, chat, photos, card shares, permissions
 lib/social.js    profiles, friends, direct messages (two-person group chats) and store listings
+lib/admin.js     admin panel API: warnings, bans, account deletion, listing removal
+lib/live.js      live updates: Server-Sent Events streams per signed-in tab
 lib/visualIndex.js  picture fingerprints of every card (English + Japanese) and the photo search
 public/          the web app (vanilla HTML/CSS/JS); vision.js = image matching, descriptor.js = shared
                  card fingerprint (browser + server), grader.js = pre-grading

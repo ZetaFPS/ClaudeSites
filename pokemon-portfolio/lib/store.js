@@ -29,7 +29,7 @@ const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 function fileStore(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'db.json');
-  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, avatars: {}, friends: {}, products: {}, productImages: {}, seq: 0 };
+  let data = { users: {}, emails: {}, sessions: {}, portfolios: {}, groups: {}, members: {}, messages: {}, images: {}, avatars: {}, friends: {}, products: {}, productImages: {}, warnings: [], seq: 0 };
   try {
     data = { ...data, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   } catch (e) {
@@ -78,7 +78,7 @@ function fileStore(dir) {
     },
     async listPortfolios() {
       return Object.entries(data.portfolios)
-        .filter(([uid]) => data.users[uid])
+        .filter(([uid]) => data.users[uid] && !data.users[uid].bannedAt)
         .map(([uid, doc]) => ({ userId: uid, name: data.users[uid].name, username: data.users[uid].username || null, avatarAt: data.users[uid].avatarAt || null, showOnLeaderboard: data.users[uid].showOnLeaderboard !== false, doc }));
     },
     // Profile picture: null image removes it. The user's avatarAt changes with every upload.
@@ -116,7 +116,8 @@ function fileStore(dir) {
       return Object.entries(data.members[groupId] || {}).filter(([uid]) => data.users[uid])
         .map(([uid, m]) => ({ userId: uid, name: data.users[uid].name, avatarAt: data.users[uid].avatarAt || null, role: m.role, joinedAt: m.joinedAt, lastRead: m.lastRead }));
     },
-    async countUserGroups(userId) { return Object.entries(data.members).filter(([gid, m]) => m[userId] && data.groups[gid]?.kind !== 'dm').length; },
+    async countUserGroups(userId) { return Object.entries(data.members).filter(([gid, m]) => m[userId] && (data.groups[gid]?.kind || 'group') === 'group').length; },
+    async setMemberRole(groupId, userId, role) { const m = data.members[groupId]?.[userId]; if (m) { m.role = role; save(); } },
     async listUserGroups(userId) {
       const out = [];
       for (const [gid, mem] of Object.entries(data.members)) {
@@ -185,15 +186,15 @@ function fileStore(dir) {
       save();
     },
     async listProducts(userId) { return Object.values(data.products).filter((p) => p.userId === userId).sort((a, b) => b.createdAt - a.createdAt).map((p) => ({ ...p })); },
-    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24 } = {}) {
-      const rows = Object.values(data.products).map((p) => ({ ...p, seller: data.users[p.userId] })).filter((p) => p.seller).filter((p) => {
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false } = {}) {
+      const rows = Object.values(data.products).map((p) => ({ ...p, seller: data.users[p.userId] })).filter((p) => p.seller && (includeBanned || !p.seller.bannedAt)).filter((p) => {
         const hay = `${p.title} ${p.description || ''} ${p.seller.name} ${p.seller.username || ''}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       });
       rows.sort(PRODUCT_SORTS[sort] || PRODUCT_SORTS.new);
       return {
         total: rows.length,
-        items: rows.slice(offset, offset + limit).map(({ seller, ...p }) => ({ ...p, seller: { id: seller.id, name: seller.name, username: seller.username || null, avatarAt: seller.avatarAt || null } })),
+        items: rows.slice(offset, offset + limit).map(({ seller, ...p }) => ({ ...p, seller: { id: seller.id, name: seller.name, username: seller.username || null, avatarAt: seller.avatarAt || null, banned: !!seller.bannedAt } })),
       };
     },
     async addProductImage(img) { data.productImages[img.id] = { productId: img.productId, mime: img.mime, b64: img.data.toString('base64') }; save(); },
@@ -202,6 +203,55 @@ function fileStore(dir) {
       return i ? { id, productId: i.productId, mime: i.mime, data: Buffer.from(i.b64, 'base64') } : null;
     },
     async deleteProductImage(id) { if (data.productImages[id]) { delete data.productImages[id]; save(); } },
+
+    // --- moderation ---
+    async listUsers({ words = [], offset = 0, limit = 30 } = {}) {
+      const rows = Object.values(data.users).filter((u) => {
+        const hay = `${u.name} ${u.username || ''} ${u.email}`.toLowerCase();
+        return words.every((w) => hay.includes(w));
+      }).sort((a, b) => b.createdAt - a.createdAt);
+      return {
+        total: rows.length,
+        items: rows.slice(offset, offset + limit).map((u) => ({
+          ...u, productCount: Object.values(data.products).filter((p) => p.userId === u.id).length,
+          warningCount: data.warnings.filter((w) => w.userId === u.id).length,
+        })),
+      };
+    },
+    async addWarning(w) { data.warnings.push({ ...w }); save(); },
+    async listWarnings(userId) { return data.warnings.filter((w) => !userId || w.userId === userId).sort((a, b) => b.createdAt - a.createdAt).slice(0, 200); },
+    async countAll() {
+      const users = Object.values(data.users);
+      return { users: users.length, banned: users.filter((u) => u.bannedAt).length, products: Object.keys(data.products).length, warnings: data.warnings.length };
+    },
+    async deleteSessionsFor(userId) {
+      for (const [k, v] of Object.entries(data.sessions)) if (v.userId === userId) delete data.sessions[k];
+      save();
+    },
+    // Remove an account and everything it owns. Its old chat messages stay, shown as "Former member".
+    async deleteUser(id) {
+      const u = data.users[id];
+      if (!u) return;
+      delete data.emails[u.email];
+      delete data.users[id];
+      delete data.portfolios[id];
+      delete data.avatars[id];
+      for (const [k, v] of Object.entries(data.sessions)) if (v.userId === id) delete data.sessions[k];
+      for (const [k, f] of Object.entries(data.friends)) if (f.requester === id || f.addressee === id) delete data.friends[k];
+      for (const p of Object.values(data.products)) {
+        if (p.userId !== id) continue;
+        delete data.products[p.id];
+        for (const [k, img] of Object.entries(data.productImages)) if (img.productId === p.id) delete data.productImages[k];
+      }
+      for (const [gid, g] of Object.entries(data.groups)) {
+        if (g.ownerId === id) {
+          delete data.groups[gid]; delete data.members[gid]; delete data.messages[gid];
+          for (const [k, img] of Object.entries(data.images)) if (img.groupId === gid) delete data.images[k];
+        } else if (data.members[gid]) delete data.members[gid][id];
+      }
+      data.warnings = data.warnings.filter((w) => w.userId !== id);
+      save();
+    },
 
     // --- visual card index (kept in its own append-only file: it's large and only grows) ---
     async listCardFps() {
@@ -353,6 +403,17 @@ async function pgStore(url, legacyDir) {
       mime       TEXT NOT NULL,
       data       BYTEA NOT NULL
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
+    CREATE TABLE IF NOT EXISTS warnings (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      admin_id   TEXT,
+      reason     TEXT NOT NULL,
+      message    TEXT NOT NULL DEFAULT '',
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS warnings_user ON warnings (user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS kv (
       key        TEXT PRIMARY KEY,
       value      JSONB NOT NULL,
@@ -375,6 +436,7 @@ async function pgStore(url, legacyDir) {
   const toUser = (r) => r && {
     id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false,
     avatarAt: r.avatar_at != null ? +r.avatar_at : null, username: r.username || null, bio: r.bio || '', showCollection: r.show_collection === true,
+    bannedAt: r.banned_at != null ? +r.banned_at : null, banReason: r.ban_reason || null,
   };
   const dupe = (e) => {
     if (e.code !== '23505') return e;
@@ -414,6 +476,8 @@ async function pgStore(url, legacyDir) {
       if (fields.username != null) { vals.push(fields.username); sets.push(`username = $${vals.length}`); }
       if (fields.bio != null) { vals.push(fields.bio); sets.push(`bio = $${vals.length}`); }
       if (fields.showCollection != null) { vals.push(!!fields.showCollection); sets.push(`show_collection = $${vals.length}`); }
+      if (fields.bannedAt !== undefined) { vals.push(fields.bannedAt); sets.push(`banned_at = $${vals.length}`); }
+      if (fields.banReason !== undefined) { vals.push(fields.banReason); sets.push(`ban_reason = $${vals.length}`); }
       if (sets.length) {
         vals.push(id);
         try { await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); } catch (e) { throw dupe(e); }
@@ -421,7 +485,7 @@ async function pgStore(url, legacyDir) {
       return store.getUser(id);
     },
     async listPortfolios() {
-      const { rows } = await q(`SELECT u.id, u.name, u.username, u.avatar_at, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id`);
+      const { rows } = await q(`SELECT u.id, u.name, u.username, u.avatar_at, u.show_on_leaderboard, p.doc FROM users u JOIN portfolios p ON p.user_id = u.id WHERE u.banned_at IS NULL`);
       return rows.map((r) => ({ userId: r.id, name: r.name, username: r.username || null, avatarAt: r.avatar_at != null ? +r.avatar_at : null, showOnLeaderboard: r.show_on_leaderboard !== false, doc: r.doc }));
     },
     async setAvatar(userId, img) {
@@ -452,6 +516,7 @@ async function pgStore(url, legacyDir) {
       const sets = [], vals = [];
       if (fields.name != null) { vals.push(fields.name); sets.push(`name = $${vals.length}`); }
       if (fields.inviteCode != null) { vals.push(fields.inviteCode); sets.push(`invite_code = $${vals.length}`); }
+      if (fields.ownerId != null) { vals.push(fields.ownerId); sets.push(`owner_id = $${vals.length}`); }
       if (sets.length) { vals.push(id); await q(`UPDATE groups SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); }
       return store.getGroup(id);
     },
@@ -470,8 +535,9 @@ async function pgStore(url, legacyDir) {
       return rows.map((r) => ({ userId: r.user_id, name: r.name, avatarAt: r.avatar_at != null ? +r.avatar_at : null, role: r.role, joinedAt: +r.joined_at, lastRead: +r.last_read }));
     },
     async countUserGroups(userId) {
-      return (await q(`SELECT COUNT(*)::int AS n FROM group_members m JOIN groups g ON g.id = m.group_id WHERE m.user_id = $1 AND g.kind <> 'dm'`, [userId])).rows[0].n;
+      return (await q(`SELECT COUNT(*)::int AS n FROM group_members m JOIN groups g ON g.id = m.group_id WHERE m.user_id = $1 AND g.kind = 'group'`, [userId])).rows[0].n;
     },
+    async setMemberRole(groupId, userId, role) { await q('UPDATE group_members SET role = $3 WHERE group_id = $1 AND user_id = $2', [groupId, userId, role]); },
     async listUserGroups(userId) {
       const { rows } = await q(`
         SELECT g.*, m.role, m.last_read,
@@ -549,24 +615,25 @@ async function pgStore(url, legacyDir) {
     },
     async deleteProduct(id) { await q('DELETE FROM products WHERE id = $1', [id]); },
     async listProducts(userId) { return (await q('SELECT * FROM products WHERE user_id = $1 ORDER BY created_at DESC', [userId])).rows.map(toProduct); },
-    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24 } = {}) {
+    async searchProducts({ words = [], sort = 'new', offset = 0, limit = 24, includeBanned = false } = {}) {
       const vals = [];
-      const where = words.map((w) => {
+      const where = includeBanned ? [] : ['u.banned_at IS NULL'];
+      where.push(...words.map((w) => {
         vals.push(`%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         const n = `$${vals.length}`;
         return `(p.title ILIKE ${n} OR p.description ILIKE ${n} OR u.name ILIKE ${n} OR u.username ILIKE ${n})`;
-      });
+      }));
       vals.push(limit, offset);
-      const { rows } = await q(`SELECT p.*, u.name AS s_name, u.username AS s_username, u.avatar_at AS s_avatar_at, COUNT(*) OVER () AS total
+      const { rows } = await q(`SELECT p.*, u.name AS s_name, u.username AS s_username, u.avatar_at AS s_avatar_at, u.banned_at AS s_banned_at, COUNT(*) OVER () AS total
                                 FROM products p JOIN users u ON u.id = p.user_id
                                 ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
                                 ORDER BY ${PRODUCT_ORDER_SQL[sort] || PRODUCT_ORDER_SQL.new}
                                 LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
       let total = rows.length ? +rows[0].total : 0;
-      if (!rows.length && offset) total = (await store.searchProducts({ words, sort, offset: 0, limit: 1 })).total;
+      if (!rows.length && offset) total = (await store.searchProducts({ words, sort, offset: 0, limit: 1, includeBanned })).total;
       return {
         total,
-        items: rows.map((r) => ({ ...toProduct(r), seller: { id: r.user_id, name: r.s_name, username: r.s_username || null, avatarAt: r.s_avatar_at != null ? +r.s_avatar_at : null } })),
+        items: rows.map((r) => ({ ...toProduct(r), seller: { id: r.user_id, name: r.s_name, username: r.s_username || null, avatarAt: r.s_avatar_at != null ? +r.s_avatar_at : null, banned: r.s_banned_at != null } })),
       };
     },
     async addProductImage(img) { await q('INSERT INTO product_images (id, product_id, mime, data) VALUES ($1,$2,$3,$4)', [img.id, img.productId, img.mime, img.data]); },
@@ -575,6 +642,38 @@ async function pgStore(url, legacyDir) {
       return r ? { id: r.id, productId: r.product_id, mime: r.mime, data: r.data } : null;
     },
     async deleteProductImage(id) { await q('DELETE FROM product_images WHERE id = $1', [id]); },
+
+    // --- moderation ---
+    async listUsers({ words = [], offset = 0, limit = 30 } = {}) {
+      const vals = [];
+      const where = words.map((w) => {
+        vals.push(`%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+        const n = `$${vals.length}`;
+        return `(u.name ILIKE ${n} OR u.username ILIKE ${n} OR u.email ILIKE ${n})`;
+      });
+      vals.push(limit, offset);
+      const { rows } = await q(`SELECT u.*, COUNT(*) OVER () AS total,
+                                  (SELECT COUNT(*)::int FROM products p WHERE p.user_id = u.id) AS product_count,
+                                  (SELECT COUNT(*)::int FROM warnings w WHERE w.user_id = u.id) AS warning_count
+                                FROM users u ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                                ORDER BY u.created_at DESC LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
+      return { total: rows.length ? +rows[0].total : 0, items: rows.map((r) => ({ ...toUser(r), productCount: r.product_count, warningCount: r.warning_count })) };
+    },
+    async addWarning(w) {
+      await q('INSERT INTO warnings (id, user_id, admin_id, reason, message, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [w.id, w.userId, w.adminId, w.reason, w.message, w.createdAt]);
+    },
+    async listWarnings(userId) {
+      const { rows } = await q(`SELECT * FROM warnings ${userId ? 'WHERE user_id = $1' : ''} ORDER BY created_at DESC LIMIT 200`, userId ? [userId] : []);
+      return rows.map((r) => ({ id: r.id, userId: r.user_id, adminId: r.admin_id, reason: r.reason, message: r.message, createdAt: +r.created_at }));
+    },
+    async countAll() {
+      const r = (await q(`SELECT (SELECT COUNT(*)::int FROM users) AS users, (SELECT COUNT(*)::int FROM users WHERE banned_at IS NOT NULL) AS banned,
+                                 (SELECT COUNT(*)::int FROM products) AS products, (SELECT COUNT(*)::int FROM warnings) AS warnings`)).rows[0];
+      return { users: r.users, banned: r.banned, products: r.products, warnings: r.warnings };
+    },
+    async deleteSessionsFor(userId) { await q('DELETE FROM sessions WHERE user_id = $1', [userId]); },
+    // Everything owned by the account goes with it (ON DELETE CASCADE); old chat messages stay.
+    async deleteUser(id) { await q('DELETE FROM users WHERE id = $1', [id]); },
 
     // --- visual card index ---
     async listCardFps() {

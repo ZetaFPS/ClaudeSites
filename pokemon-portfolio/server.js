@@ -5,11 +5,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { createStore } = require('./lib/store');
-const { createAuth, httpError, checkUsername } = require('./lib/auth');
+const { createAuth, httpError, checkUsername, isAdmin } = require('./lib/auth');
 const prices = require('./lib/prices');
 const { createLeaderboard } = require('./lib/leaderboard');
 const { createGroupsApi, sniffImage } = require('./lib/groups');
 const { createSocialApi } = require('./lib/social');
+const { createAdminApi } = require('./lib/admin');
+const { createLive } = require('./lib/live');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
 const { createCatalog } = require('./lib/catalog');
 const { createPacks } = require('./lib/packs');
@@ -21,7 +23,8 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOKIE = 'pf_session';
 const MAX_BODY = 10 * 1024 * 1024;
 
-let store, auth, leaderboard, groupsApi, socialApi, visualIndex, catalog, packs; // set up in start()
+let store, auth, leaderboard, groupsApi, socialApi, adminApi, visualIndex, catalog, packs; // set up in start()
+const live = createLive();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -122,6 +125,13 @@ async function api(req, res, url) {
       persistent: storagePersistent(),
       hosted: isHosted(),
     });
+  }
+
+  // --- live updates (Server-Sent Events) ---
+  if (pathname === '/api/events' && method === 'GET') {
+    const user = await requireUser(req);
+    live.attach(req, res, user);
+    return;
   }
 
   // --- accounts ---
@@ -232,6 +242,8 @@ async function api(req, res, url) {
       const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
       await store.putPortfolio(user.id, doc);
       leaderboard.markDirty();
+      // Other open tabs/devices reload the collection (the sending tab recognises its own id).
+      live.send(user.id, 'portfolio', { updatedAt: doc.updatedAt, client: String(req.headers['x-client-id'] || '').slice(0, 40) });
       return send(res, 200, { ok: true, updatedAt: doc.updatedAt });
     }
   }
@@ -402,6 +414,9 @@ async function api(req, res, url) {
     return cardImage(res, im[1], url.searchParams.get('size') === 'large' ? 'large' : 'small');
   }
 
+  // --- admin panel ---
+  if (pathname.startsWith('/api/admin/') && await adminApi(req, res, url)) return;
+
   // --- profiles, friends, direct messages, stores ---
   if (/^\/api\/(users|friends|dm|products)(\/|$)/.test(pathname) && await socialApi(req, res, url)) return;
 
@@ -560,8 +575,9 @@ async function start() {
   store = await createStore({ databaseUrl: process.env.DATABASE_URL, dataDir: DATA_DIR });
   auth = createAuth(store);
   leaderboard = createLeaderboard(store, prices);
-  groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit });
-  socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit });
+  groupsApi = createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit, live });
+  socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live, isAdmin });
+  adminApi = createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live });
   catalog = createCatalog({ store });
   packs = createPacks({ catalog });
   visualIndex = createVisualIndex({
@@ -572,6 +588,7 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`PokéFolio running at http://localhost:${PORT}`);
     console.log(`  accounts stored in: ${store.kind}`);
+    console.log(`  admin panel: ${process.env.ADMIN_EMAILS ? 'enabled for ADMIN_EMAILS' : 'off (set ADMIN_EMAILS to your email to enable it)'}`);
     if (!storagePersistent()) {
       console.warn('\n  ⚠️  WARNING: DATABASE_URL is not set. Accounts are being saved on this server\'s disk,');
       console.warn('  ⚠️  which this host wipes on every deploy — every account will be DELETED on the next update.');

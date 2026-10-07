@@ -28,7 +28,8 @@ const ID = /^[0-9a-f-]{36}$/;
 const IMAGE_HOSTS = /^(images\.pokemontcg\.io|assets\.tcgdex\.net|tcgplayer-cdn\.tcgplayer\.com)$/;
 const safeImage = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && IMAGE_HOSTS.test(x.hostname) ? x.href : null; } catch { return null; } };
 
-function createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit }) {
+function createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live = null, isAdmin = () => false }) {
+  const ping = (userId) => live?.send(userId, 'friends', {});
   const limitWrite = rateLimit('friend/store', 60, 60e3);
   const limitUpload = rateLimit('listing upload', 30, 15 * 60e3);
 
@@ -106,7 +107,8 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
 
   // The two-person chat between two collectors (created the first time either opens it).
   async function dmWith(user, otherId) {
-    if (!(await store.getUser(otherId))) throw httpError(404, 'That collector doesn’t exist any more.');
+    const other = await store.getUser(otherId);
+    if (!other || other.bannedAt) throw httpError(404, 'That collector doesn’t exist any more.');
     const key = [user.id, otherId].sort().join('|');
     let g = await store.getGroupByDmKey(key);
     if (!g) {
@@ -137,15 +139,15 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         let username;
         try { username = checkUsername(url.searchParams.get('username')); } catch { throw httpError(404, 'No collector with that username.'); }
         const u = await store.getUserByUsername(username);
-        if (!u) throw httpError(404, 'No collector with that username.');
+        if (!u || u.bannedAt) throw httpError(404, 'No collector with that username.');
         send(res, 200, { user: card(u) });
         return true;
       }
       const uid = parts[2];
       if (!ID.test(uid || '')) throw httpError(404, 'Not found.');
       const target = await store.getUser(uid);
-      if (!target) throw httpError(404, 'That collector doesn’t exist any more.');
       const me = await optionalUser(req);
+      if (!target || (target.bannedAt && !isAdmin(me))) throw httpError(404, 'That collector doesn’t exist any more.');
       const self = me?.id === uid;
 
       // GET /api/users/:id — profile
@@ -199,7 +201,7 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
           try { username = checkUsername(body.username); } catch { throw httpError(404, 'No collector with that username.'); }
           other = await store.getUserByUsername(username);
         }
-        if (!other) throw httpError(404, 'No collector with that username.');
+        if (!other || other.bannedAt) throw httpError(404, 'No collector with that username.');
         if (other.id === user.id) throw httpError(400, 'That’s you!');
         const f = await store.getFriendship(user.id, other.id);
         let status;
@@ -207,11 +209,13 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         else if (f && f.requester === other.id) {
           await store.putFriendship({ ...f, status: 'accepted', createdAt: Date.now() });
           status = 'friends';
+          ping(other.id);
         } else if (f) status = 'outgoing';
         else {
           if ((await store.listFriendships(user.id)).length >= MAX_FRIENDS) throw httpError(400, `You can have up to ${MAX_FRIENDS} friends and requests.`);
           await store.putFriendship({ requester: user.id, addressee: other.id, status: 'pending', createdAt: Date.now() });
           status = 'outgoing';
+          ping(other.id);
         }
         send(res, 200, { status, user: card(other) });
         return true;
@@ -223,12 +227,14 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
         const f = await store.getFriendship(user.id, oid);
         if (!f || f.addressee !== user.id) throw httpError(404, 'That friend request was withdrawn.');
         if (f.status !== 'accepted') await store.putFriendship({ ...f, status: 'accepted', createdAt: Date.now() });
+        ping(oid);
         send(res, 200, { status: 'friends' });
         return true;
       }
       // DELETE /api/friends/:id — unfriend, decline or cancel
       if (parts.length === 3 && method === 'DELETE') {
         await store.deleteFriendship(user.id, oid);
+        ping(oid);
         send(res, 200, { status: 'none' });
         return true;
       }
@@ -272,9 +278,9 @@ function createSocialApi({ store, leaderboard, prices, httpError, readBody, send
       // GET /api/products/:id
       if (parts.length === 3 && method === 'GET') {
         const p = ID.test(pid || '') ? await store.getProduct(pid) : null;
-        if (!p) throw httpError(404, 'That listing doesn’t exist any more.');
-        const seller = await store.getUser(p.userId);
+        const seller = p && await store.getUser(p.userId);
         const me = await optionalUser(req);
+        if (!p || !seller || (seller.bannedAt && !isAdmin(me))) throw httpError(404, 'That listing doesn’t exist any more.');
         send(res, 200, { product: publicProduct(p, seller), relation: await relation(me, p.userId) });
         return true;
       }

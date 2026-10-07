@@ -33,7 +33,7 @@ function sniffImage(buf) {
 
 const { avatarUrl } = require('./auth');
 
-function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit }) {
+function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, rateLimit, live = null }) {
   const limitWrite = rateLimit('message', 40, 60e3);
 
   const cleanName = (name) => {
@@ -50,21 +50,55 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     return { group, member, isOwner: member.role === 'owner' };
   }
 
+  // Messages from moderators are shown as "Admin", never as the moderator's own account.
   const publicMessage = (m) => ({
-    seq: m.seq, kind: m.kind, userId: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), createdAt: m.createdAt,
+    seq: m.seq, kind: m.kind, userId: m.kind === 'admin' ? 'admin' : m.userId, name: m.kind === 'admin' ? 'Admin' : m.name,
+    avatar: m.kind === 'admin' ? null : avatarUrl(m.userId, m.avatarAt), createdAt: m.createdAt,
     body: m.body || '', card: m.card || null,
     image: m.imageId ? `/api/groups/${m.groupId}/images/${m.imageId}` : null,
   });
 
   // A direct message is a two-person chat named after the other person.
   const isDm = (g) => g.kind === 'dm';
+  const isAdminChat = (g) => g.kind === 'admin';
+  const isPrivate = (g) => isDm(g) || isAdminChat(g); // no invite code, settings or leaving
+
+  // Save a message and tell every member's open tabs (live updates).
+  const previewOf = (m) => (m.kind === 'image' ? 'sent a photo' : m.kind === 'card' ? `shared ${m.card?.name || 'a card'}` : String(m.body || '').slice(0, 140));
+  async function post(msg, fromName = '') {
+    const saved = await store.addMessage(msg);
+    if (live) {
+      const members = await store.listMembers(msg.groupId);
+      live.sendMany(members.map((m) => m.userId), 'message', {
+        groupId: msg.groupId, seq: saved.seq, kind: msg.kind, from: msg.kind === 'admin' ? 'admin' : msg.userId,
+        name: msg.kind === 'admin' ? 'Admin' : fromName, preview: previewOf(msg),
+      });
+    }
+    return saved;
+  }
+  // A moderator's message to one user, in their read-only "Admin" conversation.
+  async function adminMessage(userId, body) {
+    const key = `admin|${userId}`;
+    let g = await store.getGroupByDmKey(key);
+    if (!g) {
+      g = { id: newId(), name: 'Admin', ownerId: userId, inviteCode: `AD${crypto.randomBytes(12).toString('hex')}`, createdAt: Date.now(), kind: 'admin', dmKey: key };
+      try {
+        await store.createGroup(g);
+        await store.addMember(g.id, userId, 'member', Date.now());
+      } catch (e) {
+        g = await store.getGroupByDmKey(key);
+        if (!g) throw e;
+      }
+    }
+    return post({ groupId: g.id, userId: 'admin', kind: 'admin', body: String(body).slice(0, MAX_TEXT), createdAt: Date.now() });
+  }
   const otherOf = (members, user) => members.find((m) => m.userId !== user.id) || null;
 
   async function groupDetails(group, user, member) {
     const members = await store.listMembers(group.id);
     const other = isDm(group) ? otherOf(members, user) : null;
     return {
-      id: group.id, name: other ? other.name : group.name, createdAt: group.createdAt, inviteCode: isDm(group) ? null : group.inviteCode,
+      id: group.id, name: other ? other.name : isAdminChat(group) ? 'PokéFolio Admin' : group.name, createdAt: group.createdAt, inviteCode: isPrivate(group) ? null : group.inviteCode,
       ownerId: group.ownerId, myRole: member.role, kind: group.kind || 'group',
       other: other ? { id: other.userId, name: other.name, avatar: avatarUrl(other.userId, other.avatarAt) } : null,
       members: members.map((m) => ({ id: m.userId, name: m.name, avatar: avatarUrl(m.userId, m.avatarAt), role: m.role, joinedAt: m.joinedAt, me: m.userId === user.id })),
@@ -86,7 +120,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
   }
 
   // Returns true when the request was a groups route.
-  return async function handle(req, res, url) {
+  async function handle(req, res, url) {
     const path = url.pathname;
     if (!path.startsWith('/api/groups')) return false;
     const method = req.method;
@@ -100,10 +134,10 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       // Direct messages are named after (and pictured as) the other person.
       const others = new Map(await Promise.all(rows.filter(isDm).map(async (g) => [g.id, otherOf(await store.listMembers(g.id), user)])));
       const groups = rows.map((g) => ({
-        id: g.id, name: isDm(g) ? others.get(g.id)?.name || 'Former friend' : g.name, role: g.role, memberCount: g.memberCount, unread: g.unread,
+        id: g.id, name: isDm(g) ? others.get(g.id)?.name || 'Former member' : isAdminChat(g) ? 'PokéFolio Admin' : g.name, role: g.role, memberCount: g.memberCount, unread: g.unread,
         createdAt: g.createdAt, kind: g.kind || 'group',
         other: isDm(g) && others.get(g.id) ? { id: others.get(g.id).userId, avatar: avatarUrl(others.get(g.id).userId, others.get(g.id).avatarAt) } : null,
-        last: g.last ? { kind: g.last.kind, body: (g.last.body || '').slice(0, 120), name: g.last.name, createdAt: g.last.createdAt, mine: g.last.userId === user.id } : null,
+        last: g.last ? { kind: g.last.kind, body: (g.last.body || '').slice(0, 120), name: g.last.kind === 'admin' ? 'Admin' : g.last.name, createdAt: g.last.createdAt, mine: g.last.userId === user.id } : null,
       })).sort((a, b) => (b.last?.createdAt || b.createdAt) - (a.last?.createdAt || a.createdAt));
       send(res, 200, { groups, unread: groups.reduce((n, g) => n + g.unread, 0) });
       return true;
@@ -117,7 +151,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       const group = { id: newId(), name: cleanName(name), ownerId: user.id, inviteCode: newInviteCode(), createdAt: Date.now() };
       await store.createGroup(group);
       await store.addMember(group.id, user.id, 'owner', Date.now());
-      await store.addMessage({ groupId: group.id, userId: user.id, kind: 'system', body: `${user.name} created the group`, createdAt: Date.now() });
+      await post({ groupId: group.id, userId: user.id, kind: 'system', body: `${user.name} created the group`, createdAt: Date.now() }, user.name);
       send(res, 201, { group: await groupDetails(group, user, { role: 'owner' }) });
       return true;
     }
@@ -127,14 +161,14 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       limitWrite(req);
       const code = String((await readBody(req)).code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       const found = code.length === 8 ? await store.getGroupByCode(code) : null;
-      const group = found && !isDm(found) ? found : null;
+      const group = found && !isPrivate(found) ? found : null;
       if (!group) throw httpError(404, 'That invite code doesn’t match any group. Check it and try again.');
       const existing = await store.getMember(group.id, user.id);
       if (!existing) {
         if ((await store.listMembers(group.id)).length >= MAX_MEMBERS) throw httpError(400, 'That group is full.');
         if ((await store.countUserGroups(user.id)) >= MAX_GROUPS_PER_USER) throw httpError(400, `You can be in up to ${MAX_GROUPS_PER_USER} groups.`);
         await store.addMember(group.id, user.id, 'member', Date.now());
-        await store.addMessage({ groupId: group.id, userId: user.id, kind: 'system', body: `${user.name} joined`, createdAt: Date.now() });
+        await post({ groupId: group.id, userId: user.id, kind: 'system', body: `${user.name} joined`, createdAt: Date.now() }, user.name);
       }
       send(res, 200, { group: await groupDetails(group, user, existing || { role: 'member' }), alreadyMember: !!existing });
       return true;
@@ -144,7 +178,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     const { group, member, isOwner } = await membership(gid, user);
     const sub = parts[3];
     // Direct messages have no settings: no renaming, inviting, removing or leaving.
-    if (isDm(group) && ((!sub && method !== 'GET') || ['invite', 'leave', 'members'].includes(sub))) {
+    if (isPrivate(group) && ((!sub && method !== 'GET') || ['invite', 'leave', 'members'].includes(sub))) {
       throw httpError(400, 'Direct messages can’t be renamed, shared or left.');
     }
 
@@ -156,7 +190,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       if (!isOwner) throw httpError(403, 'Only the group owner can rename it.');
       const name = cleanName((await readBody(req)).name);
       await store.updateGroup(gid, { name });
-      await store.addMessage({ groupId: gid, userId: user.id, kind: 'system', body: `${user.name} renamed the group to “${name}”`, createdAt: Date.now() });
+      await post({ groupId: gid, userId: user.id, kind: 'system', body: `${user.name} renamed the group to “${name}”`, createdAt: Date.now() }, user.name);
       send(res, 200, { group: await groupDetails({ ...group, name }, user, member) });
       return true;
     }
@@ -186,7 +220,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
         await store.deleteGroup(gid);
       } else {
         await store.removeMember(gid, user.id);
-        await store.addMessage({ groupId: gid, userId: user.id, kind: 'system', body: `${user.name} left`, createdAt: Date.now() });
+        await post({ groupId: gid, userId: user.id, kind: 'system', body: `${user.name} left`, createdAt: Date.now() }, user.name);
       }
       send(res, 200, { ok: true });
       return true;
@@ -199,7 +233,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       const target = (await store.listMembers(gid)).find((m) => m.userId === parts[4]);
       if (!target) throw httpError(404, 'That person isn’t in this group.');
       await store.removeMember(gid, parts[4]);
-      await store.addMessage({ groupId: gid, userId: user.id, kind: 'system', body: `${target.name} was removed from the group`, createdAt: Date.now() });
+      await post({ groupId: gid, userId: user.id, kind: 'system', body: `${target.name} was removed from the group`, createdAt: Date.now() }, user.name);
       send(res, 200, { ok: true });
       return true;
     }
@@ -225,6 +259,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     // POST /api/groups/:id/messages — { text } | { kind: 'card', cardId, variant, text? } | { kind: 'image', image: dataURL, text? }
     if (sub === 'messages' && !parts[4] && method === 'POST') {
       limitWrite(req);
+      if (isAdminChat(group)) throw httpError(403, 'You can’t reply to admin messages.');
       const body = await readBody(req);
       const text = typeof body.text === 'string' ? body.text.replace(/\r\n/g, '\n').trim().slice(0, MAX_TEXT) : '';
       const msg = { groupId: gid, userId: user.id, kind: 'text', body: text, createdAt: Date.now() };
@@ -245,7 +280,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
       } else if (!text) {
         throw httpError(400, 'Type a message first.');
       }
-      const saved = await store.addMessage(msg);
+      const saved = await post(msg, user.name);
       await store.setLastRead(gid, user.id, saved.seq);
       send(res, 201, { message: publicMessage({ ...saved, name: user.name, avatarAt: user.avatarAt }) });
       return true;
@@ -255,7 +290,7 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     if (sub === 'messages' && parts[4] && method === 'DELETE') {
       const seq = parseInt(parts[4], 10);
       const m = Number.isFinite(seq) ? await store.getMessage(gid, seq) : null;
-      if (!m || m.kind === 'system') throw httpError(404, 'Message not found.');
+      if (!m || m.kind === 'system' || m.kind === 'admin') throw httpError(404, 'Message not found.');
       if (m.userId !== user.id && !isOwner) throw httpError(403, 'You can only delete your own messages.');
       await store.deleteMessage(gid, seq);
       send(res, 200, { ok: true });
@@ -278,7 +313,9 @@ function createGroupsApi({ store, leaderboard, prices, httpError, readBody, send
     }
 
     throw httpError(404, 'Not found.');
-  };
+  }
+  handle.adminMessage = adminMessage;
+  return handle;
 }
 
 module.exports = { createGroupsApi, sniffImage };

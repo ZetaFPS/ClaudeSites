@@ -29,6 +29,7 @@ function createAuth(store) {
     return {
       id: u.id, email: u.email, name: u.name, username: u.username || null, bio: u.bio || '', createdAt: u.createdAt,
       showOnLeaderboard: u.showOnLeaderboard !== false, showCollection: u.showCollection === true, avatar: avatarUrl(u.id, u.avatarAt),
+      ...(isAdmin(u) ? { isAdmin: true } : {}),
     };
   }
 
@@ -44,7 +45,9 @@ function createAuth(store) {
     const s = await store.getSession(key);
     if (!s) return null;
     if (s.expires < Date.now()) { await store.deleteSession(key); return null; }
-    return store.getUser(s.userId);
+    const user = await store.getUser(s.userId);
+    if (user?.bannedAt) { await store.deleteSession(key); return null; }
+    return user;
   }
 
   async function destroySession(token) {
@@ -77,6 +80,7 @@ function createAuth(store) {
     const user = await store.getUserByEmail(email);
     const ok = await verifyPassword(String(password || ''), user ? user.passHash : await dummy);
     if (!user || !ok) throw httpError(401, 'Incorrect email or password.');
+    if (user.bannedAt) throw httpError(403, `This account has been banned${user.banReason ? `: ${user.banReason}` : '.'}`);
     return user;
   }
 
@@ -85,6 +89,11 @@ function createAuth(store) {
 
   return { publicUser, createSession, userForToken, destroySession, signup, login };
 }
+
+// Admins: accounts whose email is listed in ADMIN_EMAILS (comma-separated), e.g.
+// ADMIN_EMAILS=you@example.com. Set it in the host's environment settings, never in the code.
+const adminEmails = () => new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean));
+const isAdmin = (u) => !!u?.email && adminEmails().has(String(u.email).toLowerCase());
 
 // Usernames: what friends type to add you. 3–20 letters, numbers, dots or underscores, stored lowercase.
 function checkUsername(raw) {
@@ -103,4 +112,4 @@ function httpError(status, message) {
   return e;
 }
 
-module.exports = { createAuth, httpError, avatarUrl, checkUsername };
+module.exports = { createAuth, httpError, avatarUrl, checkUsername, isAdmin };

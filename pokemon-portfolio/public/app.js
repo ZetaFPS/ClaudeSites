@@ -32,11 +32,12 @@
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } };
   const lsDel = (k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } };
 
-  async function api(path, { method = 'GET', body } = {}) {
+  const TAB_ID = Math.random().toString(36).slice(2, 12); // tells this tab's own live events apart
+  async function api(path, { method = 'GET', body, headers = {} } = {}) {
     const res = await fetch(path, {
       method,
       credentials: 'same-origin',
-      headers: body ? { 'Content-Type': 'application/json' } : {},
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
     });
     let json = null;
@@ -76,7 +77,7 @@
   async function pushRemote() {
     if (!user) return;
     try {
-      await api('/api/portfolio', { method: 'PUT', body: { items: state.items, history: state.history, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
+      await api('/api/portfolio', { method: 'PUT', headers: { 'X-Client-Id': TAB_ID }, body: { items: state.items, history: state.history, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
       setSync('ok', 'Synced');
     } catch (e) {
       if (e.status === 401) return signedOut('Your session expired — please sign in again.');
@@ -182,7 +183,11 @@
     openGroup = null;
     friendsData = null; friendReqs = 0; groupsUnread = 0;
     paintBadges();
+    disconnectLive();
+    resetAnimatedValues();
+    rowPrices.clear();
     user = null;
+    paintAdminAccess();
     state = emptyState();
     showAuth(message);
   }
@@ -196,6 +201,8 @@
     go('portfolio');
     hideSplash();
     startListPolling();
+    connectLive();
+    paintAdminAccess();
     handleInviteLink();
     setTimeout(promptUsername, 900);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
@@ -494,7 +501,7 @@
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.goto === view && ('focusSearch' in t.dataset) === focusSearch));
     $('#view-scan').classList.toggle('search-mode', view === 'scan' && focusSearch);
     // On phones, Index/Packs/Marketplace/Grade live under "More": highlight it when one is open.
-    $('#moreBtn').classList.toggle('active', ['index', 'packs', 'market', 'grade'].includes(view));
+    $('#moreBtn').classList.toggle('active', ['index', 'packs', 'market', 'grade', 'admin'].includes(view));
     $$('#moreMenu [data-goto]').forEach((b) => b.classList.toggle('active', b.dataset.goto === view && ('focusSearch' in b.dataset) === focusSearch));
     closeMore();
     if (view !== 'scan' || focusSearch) stopCamera();
@@ -506,6 +513,7 @@
     else clearTimeout(packs.retry);
     if (view === 'portfolio') renderPortfolio();
     if (view === 'market') openMarket();
+    if (view === 'admin') openAdmin();
     if (view === 'grade') prepareGrader();
     if (view === 'groups') loadGroups();
     if (view === 'friends') loadFriends();
@@ -536,15 +544,42 @@
 
   /* ================= Portfolio ================= */
   let chartRange = 30;
+  // Count from the old number to the new one (and flash green/red) whenever a value changes.
+  const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  function animateValue(el, to, fmt) {
+    const from = el._val;
+    el._val = to;
+    cancelAnimationFrame(el._raf);
+    if (from == null || !Number.isFinite(from) || !Number.isFinite(to) || Math.abs(to - from) < 0.005 || reduceMotion()) {
+      el.textContent = fmt(to);
+      return;
+    }
+    const dir = to > from ? 'tick-up' : 'tick-down';
+    el.classList.remove('tick-up', 'tick-down');
+    void el.offsetWidth; // restart the flash
+    el.classList.add(dir);
+    clearTimeout(el._flash);
+    el._flash = setTimeout(() => el.classList.remove(dir), 1600);
+    const t0 = performance.now(), dur = 1100;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      el.textContent = fmt(from + (to - from) * (1 - (1 - k) ** 3));
+      if (k < 1) el._raf = requestAnimationFrame(step);
+    };
+    el._raf = requestAnimationFrame(step);
+  }
+  const resetAnimatedValues = () => ['#totalValue', '#statCards', '#statCost', '#statGain'].forEach((s) => { $(s)._val = null; });
+
   function renderPortfolio() {
     const { value, cost, count } = totals();
-    $('#totalValue').textContent = money(value);
-    $('#statCards').textContent = count;
-    $('#statCost').textContent = money(cost);
+    animateValue($('#totalValue'), value, money);
+    animateValue($('#statCards'), count, (n) => String(Math.round(n)));
+    animateValue($('#statCost'), cost, money);
     const gain = value - cost;
     const statGain = $('#statGain');
-    statGain.textContent = cost ? signed(gain) : '—';
     statGain.className = 'stat-value num ' + (cost ? (gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat') : '');
+    if (cost) animateValue(statGain, gain, signed);
+    else { statGain._val = null; statGain.textContent = '—'; }
     const unpriced = state.items.filter((i) => itemPrice(i) == null).length;
     $('#priceUpdated').textContent = state.items.length
       ? `Raw market prices · TCGplayer / PriceCharting${state.pricesUpdatedAt ? ` · updated ${timeAgo(state.pricesUpdatedAt)}` : ''}${unpriced ? ` · ${unpriced} unpriced` : ''}`
@@ -720,6 +755,7 @@
     }
   }
 
+  const rowPrices = new Map(); // card uid -> price shown last time
   function renderList() {
     const filter = $('#filterInput').value.trim().toLowerCase();
     const sort = $('#sortSelect').value;
@@ -743,6 +779,10 @@
     items.sort(cmp);
     $('#cardList').innerHTML = items.map((it) => {
       const c = it.card, price = itemPrice(it), gain = itemValue(it) - itemCost(it);
+      // A price that changed since the last render flashes green/red.
+      const before = rowPrices.get(it.uid);
+      const flash = before != null && price != null && Math.abs(before - price) >= 0.005 && !reduceMotion() ? (price > before ? 'flash-up' : 'flash-down') : '';
+      rowPrices.set(it.uid, price);
       const gainHtml = it.purchasePrice && price != null ? `<div class="g num ${gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat'}">${signed(gain)}</div>` : '';
       return `<button class="card-row" data-uid="${esc(it.uid)}">
         <img ${imgAttrs(c)} alt="" loading="lazy">
@@ -758,7 +798,7 @@
           </div>
         </div>
         <div class="price">
-          <div class="v num">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
+          <div class="v num ${flash}">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
           ${it.qty > 1 && price != null ? `<div class="muted num">${money(price)} ea</div>` : ''}
           ${gainHtml}
         </div>
@@ -2516,10 +2556,13 @@
   /* ---- friends page ---- */
   let friendsData = null;
   let friendReqs = 0, groupsUnread = 0;
+  const BASE_TITLE = document.title;
   function paintBadges() {
     const set = (id, n) => { const b = $(id); if (!b) return; b.hidden = !n; b.textContent = n > 99 ? '99+' : n; };
     set('#groupsBadge', groupsUnread);
     set('#friendsBadge', friendReqs);
+    const n = groupsUnread + friendReqs;
+    document.title = `${n ? `(${n > 99 ? '99+' : n}) ` : ''}${BASE_TITLE}`;
   }
   async function refreshFriends() {
     if (!user) return;
@@ -2648,6 +2691,305 @@
     });
   }
 
+  /* ================= Live updates ================= */
+  // One Server-Sent Events stream per tab: new messages pop up, friend requests and badges update,
+  // and a collection changed on another device reloads here — no refresh needed.
+  let liveSrc = null, liveRetry = null;
+  const liveOpen = () => !!liveSrc && liveSrc.readyState === 1;
+  function connectLive() {
+    disconnectLive();
+    if (!user || typeof EventSource === 'undefined') return;
+    const src = new EventSource('/api/events');
+    liveSrc = src;
+    const on = (name, fn) => src.addEventListener(name, (e) => { try { fn(JSON.parse(e.data || '{}')); } catch { /* bad event */ } });
+    on('message', onLiveMessage);
+    on('friends', onLiveFriends);
+    on('portfolio', onLivePortfolio);
+    on('banned', (d) => {
+      disconnectLive();
+      lsDel(storeKey());
+      signedOut(d.deleted ? 'This account was deleted by an admin.' : `This account has been banned${d.reason ? `: ${d.reason}` : '.'}`);
+    });
+    src.onerror = () => {
+      // The browser reconnects by itself; if it gave up (e.g. signed out elsewhere), try again later.
+      if (src.readyState === 2 && liveSrc === src) liveRetry = setTimeout(connectLive, 30000);
+    };
+  }
+  function disconnectLive() {
+    clearTimeout(liveRetry);
+    liveSrc?.close();
+    liveSrc = null;
+  }
+
+  async function onLiveMessage(d) {
+    refreshGroupList();
+    if (openGroup?.id === d.groupId) fetchMessages(false);
+    const looking = openGroup?.id === d.groupId && $('#view-groups').classList.contains('active') && !document.hidden;
+    if (d.from === user?.id || d.kind === 'system' || looking) return;
+    livePop({
+      title: d.from === 'admin' ? 'Admin' : d.name || 'New message',
+      body: d.preview || 'New message',
+      icon: d.from === 'admin' ? `<span class="pop-face admin">${SHIELD}</span>` : `<span class="pop-face">${nameInitial(d.name)}</span>`,
+      tone: d.from === 'admin' ? 'admin' : '',
+      action: () => { go('groups'); openGroupById(d.groupId); },
+    });
+  }
+  async function onLiveFriends() {
+    const before = new Set((friendsData?.incoming || []).map((f) => f.id));
+    await refreshFriends();
+    const fresh = (friendsData?.incoming || []).find((f) => !before.has(f.id));
+    if (fresh) livePop({ title: 'Friend request', body: `${fresh.name}${fresh.username ? ` (@${fresh.username})` : ''} wants to be friends`, icon: `<span class="pop-face">${faceHtml(fresh.name, fresh.avatar)}</span>`, action: () => go('friends') });
+  }
+  async function onLivePortfolio(d) {
+    if (d.client === TAB_ID || (d.updatedAt || 0) <= (state.updatedAt || 0)) return;
+    try {
+      const remote = await api('/api/portfolio');
+      if (!remote || (remote.updatedAt || 0) <= (state.updatedAt || 0)) return;
+      state = { ...emptyState(), ...remote };
+      lsSet(storeKey(), JSON.stringify(state));
+      setSync('ok', 'Synced');
+      renderPortfolio();
+    } catch { /* next event or reload */ }
+  }
+
+  // Small pop-up cards in the corner; tap to open, they fade after a few seconds.
+  function livePop({ title, body, icon = '', tone = '', action = null }) {
+    const box = $('#livePops');
+    const el = document.createElement('button');
+    el.className = `live-pop glass ${tone}`;
+    el.innerHTML = `${icon}<span class="pop-text"><b>${esc(title)}</b><small>${esc(body)}</small></span><span class="pop-x" aria-hidden="true">×</span>`;
+    const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 250); };
+    el.addEventListener('click', (e) => { close(); if (!e.target.closest('.pop-x')) action?.(); });
+    box.prepend(el);
+    while (box.children.length > 3) box.lastElementChild.remove();
+    setTimeout(close, tone === 'admin' ? 9000 : 6000);
+  }
+
+  // Market prices: re-checked every few minutes while the app is open, so totals move on their own.
+  const LIVE_PRICE_MS = 5 * 60e3;
+  const pricesDue = () => !document.hidden && state.items.length && Date.now() - (state.pricesUpdatedAt || 0) > LIVE_PRICE_MS;
+  setInterval(() => { if (pricesDue()) refreshPrices({ silent: true }); }, 60e3);
+  document.addEventListener('visibilitychange', () => { if (pricesDue()) refreshPrices({ silent: true }); });
+
+  /* ================= Admin panel (accounts in ADMIN_EMAILS only) ================= */
+  const adm = { tab: 'users', q: '', items: [], total: 0, more: false, loading: false, req: 0, overview: null };
+  function paintAdminAccess() {
+    const on = !!user?.isAdmin;
+    $$('.admin-only').forEach((el) => { el.hidden = !on; });
+    if (!on && $('#view-admin').classList.contains('active')) go('portfolio');
+  }
+  function openAdmin() {
+    if (!user?.isAdmin) { go('portfolio'); return; }
+    loadAdminOverview();
+    loadAdminList(true);
+  }
+  $('#admTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-at]');
+    if (!b || b.dataset.at === adm.tab) return;
+    adm.tab = b.dataset.at;
+    $$('#admTabs [data-at]').forEach((x) => x.classList.toggle('active', x === b));
+    $('#admSearch').hidden = adm.tab === 'warnings';
+    $('#admQuery').value = '';
+    $('#admQuery').placeholder = adm.tab === 'users' ? 'Search accounts by name, @username or email' : 'Search listings by title, description or seller';
+    adm.q = '';
+    loadAdminList(true);
+  });
+  let admTimer = null;
+  const admSearchNow = () => { clearTimeout(admTimer); adm.q = $('#admQuery').value.trim(); loadAdminList(true); };
+  $('#admSearch').addEventListener('submit', (e) => { e.preventDefault(); admSearchNow(); });
+  $('#admQuery').addEventListener('input', () => { clearTimeout(admTimer); admTimer = setTimeout(admSearchNow, 350); });
+
+  async function loadAdminOverview() {
+    try {
+      adm.overview = await api('/api/admin/overview');
+      const c = adm.overview.counts;
+      $('#admStats').innerHTML = [['Accounts', c.users], ['Online now', c.online], ['Banned', c.banned], ['Listings', c.products], ['Warnings sent', c.warnings]]
+        .map(([k, v]) => `<div class="info glass"><div class="k">${k}</div><div class="v num">${v}</div></div>`).join('');
+      if (adm.tab === 'warnings') paintAdminList();
+    } catch (e) {
+      if (e.status === 404) { user = { ...user, isAdmin: false }; paintAdminAccess(); }
+    }
+  }
+  async function loadAdminList(reset) {
+    if (reset) { adm.items = []; adm.more = false; }
+    if (adm.tab === 'warnings') { paintAdminList(); return; }
+    const req = ++adm.req;
+    adm.loading = true;
+    paintAdminList();
+    try {
+      const res = await api(`/api/admin/${adm.tab}?q=${encodeURIComponent(adm.q)}&offset=${adm.items.length}`);
+      if (req !== adm.req) return;
+      adm.items.push(...res.items);
+      adm.total = res.total;
+      adm.more = res.more;
+    } catch (e) {
+      if (req === adm.req) toast(e.message || 'Couldn’t load that');
+    }
+    if (req !== adm.req) return;
+    adm.loading = false;
+    paintAdminList();
+  }
+  const reasonName = (k) => adm.overview?.reasons?.[k] || k;
+  const reasonOptions = (sel) => Object.entries(adm.overview?.reasons || { other: 'Breaking the community rules' })
+    .map(([k, v]) => `<option value="${esc(k)}" ${k === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  function paintAdminList() {
+    const box = $('#admList');
+    if (adm.tab === 'warnings') {
+      const ws = adm.overview?.recentWarnings || [];
+      box.innerHTML = ws.length ? ws.map((w) => `
+        <button class="adm-warn glass" ${w.user ? `data-adm-user="${esc(w.user.id)}"` : ''}>
+          <span class="adm-reason">${esc(reasonName(w.reason))}</span>
+          <b>${esc(w.user ? `${w.user.name}${w.user.username ? ` · @${w.user.username}` : ''}` : 'Deleted account')}</b>
+          ${w.message ? `<small>${esc(w.message)}</small>` : ''}
+          <em>${esc(timeAgo(w.createdAt))}</em>
+        </button>`).join('') : '<div class="groups-none"><b>No warnings sent yet</b><span>Warnings you send from an account or listing show up here.</span></div>';
+      $('#admMore').innerHTML = '';
+      return;
+    }
+    if (!adm.items.length) {
+      box.innerHTML = adm.loading ? Array.from({ length: 4 }, () => '<div class="lb-row skeleton-row"></div>').join('')
+        : `<div class="groups-none"><b>Nothing found</b><span>${adm.q ? 'Try a different search.' : 'Nothing here yet.'}</span></div>`;
+    } else if (adm.tab === 'users') {
+      box.innerHTML = adm.items.map((u) => `
+        <button class="adm-row glass ${u.bannedAt ? 'banned' : ''}" data-adm-user="${esc(u.id)}">
+          <span class="pod-avatar sm">${faceHtml(u.name, u.avatar)}</span>
+          <span class="adm-main">
+            <b>${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.admin ? ' <i class="tag admin">Admin</i>' : ''}${u.bannedAt ? ' <i class="tag banned">Banned</i>' : ''}</b>
+            <small>${esc(u.email)} · joined ${esc(new Date(u.createdAt).toLocaleDateString())}</small>
+          </span>
+          <span class="adm-counts"><span>${u.productCount ?? 0} listing${u.productCount === 1 ? '' : 's'}</span><span class="${u.warningCount ? 'warned' : ''}">${u.warningCount ?? 0} warning${u.warningCount === 1 ? '' : 's'}</span></span>
+        </button>`).join('');
+    } else {
+      box.innerHTML = `<div class="adm-listings">${adm.items.map((p) => `
+        <div class="adm-listing glass">
+          <button class="adm-thumb" data-open-listing="${esc(p.id)}"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt="" loading="lazy"></button>
+          <span class="adm-main">
+            <b>${esc(p.title)}</b>
+            <small>${money(p.price)} · ${esc(timeAgo(p.createdAt))}</small>
+            <button class="link-btn adm-seller" data-adm-user="${esc(p.seller.id)}">${esc(p.seller.username ? `@${p.seller.username}` : p.seller.name)}${p.seller.banned ? ' · banned' : ''}</button>
+          </span>
+          <button class="btn danger sm" data-adm-remove="${esc(p.id)}">Remove</button>
+        </div>`).join('')}</div>`;
+    }
+    $('#admMore').innerHTML = adm.more ? (adm.loading ? '<div class="group-empty"><div class="reticle small busy" aria-hidden="true"></div></div>'
+      : `<button class="btn block" id="admMoreBtn">Load more (${adm.items.length} of ${adm.total})</button>`) : '';
+    $('#admMoreBtn')?.addEventListener('click', () => loadAdminList(false));
+  }
+  document.addEventListener('click', (e) => {
+    const u = e.target.closest('[data-adm-user]');
+    if (u) { e.stopPropagation(); openAdminUser(u.dataset.admUser); return; }
+    const r = e.target.closest('[data-adm-remove]');
+    if (r) {
+      // From an account's page (inside the sheet) go back there afterwards; from the list, close.
+      const inSheet = !!r.closest('#sheet');
+      const p = (inSheet ? adm.userCtx?.products : adm.items)?.find((x) => x.id === r.dataset.admRemove);
+      if (p) adminRemoveListing(p, inSheet ? adm.userCtx.user.id : null);
+    }
+  });
+
+  async function openAdminUser(id) {
+    $('#sheetBody').innerHTML = loaderHtml('adm-user');
+    openSheetShell();
+    let d;
+    try { d = await api(`/api/admin/users/${encodeURIComponent(id)}`); } catch (e) {
+      $('#sheetBody').innerHTML = `<div class="adm-user"><p class="note">${esc(e.message || 'Couldn’t load that account.')}</p></div>`;
+      return;
+    }
+    adm.userCtx = d;
+    const u = d.user;
+    if (!adm.overview) await loadAdminOverview();
+    $('#sheetBody').innerHTML = `
+      <div class="adm-user">
+        <div class="profile-head">
+          <span class="pod-avatar lg">${faceHtml(u.name, u.avatar)}</span>
+          <div class="profile-id">
+            <h3 id="sheetTitle">${esc(u.name)}</h3>
+            <p class="muted">${u.username ? `@${esc(u.username)} · ` : ''}${esc(u.email)}</p>
+            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}</p>
+          </div>
+        </div>
+        ${u.bannedAt ? `<p class="adm-banned">Banned ${esc(timeAgo(u.bannedAt))}${u.banReason ? ` — ${esc(u.banReason)}` : ''}</p>` : ''}
+        ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : '<p class="profile-bio empty">No profile description.</p>'}
+        <div class="adm-actions">
+          <button class="btn primary" data-aa="warn">⚠️ Send warning</button>
+          ${u.admin ? '' : u.bannedAt ? '<button class="btn" data-aa="unban">Unban</button>' : '<button class="btn danger" data-aa="ban">Ban account</button>'}
+          ${u.bannedAt ? '' : `<button class="btn ghost" data-prof="${esc(u.id)}">View profile</button>`}
+          ${u.avatar ? '<button class="btn ghost" data-aa="avatar">Remove profile picture</button>' : ''}
+          ${u.bio ? '<button class="btn ghost" data-aa="bio">Clear description</button>' : ''}
+          ${u.admin ? '' : '<button class="btn danger" data-aa="delete">Delete account</button>'}
+        </div>
+        <form class="adm-form glass" id="warnForm" hidden>
+          <div class="field"><label for="warnReason">Reason</label><select id="warnReason">${reasonOptions('listing')}</select></div>
+          <div class="field"><label for="warnMsg">Message (optional)</label><textarea id="warnMsg" rows="3" maxlength="1500" placeholder="Explain what needs to change — they’ll see this in Messages from “Admin”."></textarea></div>
+          <button class="btn primary block">Send warning</button>
+        </form>
+        <h4 class="profile-sub">Listings · ${d.products.length}</h4>
+        ${d.products.length ? `<div class="adm-listings">${d.products.map((p) => `
+          <div class="adm-listing glass">
+            <button class="adm-thumb" data-open-listing="${esc(p.id)}"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt="" loading="lazy"></button>
+            <span class="adm-main"><b>${esc(p.title)}</b><small>${money(p.price)} · ${esc(timeAgo(p.createdAt))}</small></span>
+            <button class="btn danger sm" data-adm-remove="${esc(p.id)}">Remove</button>
+          </div>`).join('')}</div>` : '<p class="note">No listings.</p>'}
+        <h4 class="profile-sub">Warnings · ${d.warnings.length}</h4>
+        ${d.warnings.length ? d.warnings.map((w) => `<div class="adm-warn glass"><span class="adm-reason">${esc(reasonName(w.reason))}</span>${w.message ? `<small>${esc(w.message)}</small>` : ''}<em>${esc(timeAgo(w.createdAt))}</em></div>`).join('') : '<p class="note">No warnings yet.</p>'}
+      </div>`;
+    const reload = () => { loadAdminOverview(); loadAdminList(true); openAdminUser(u.id); };
+    const run = async (fn, done) => { try { await fn(); toast(done); reload(); } catch (e) { toast(e.message || 'That didn’t work — try again'); } };
+    $$('[data-aa]').forEach((b) => b.addEventListener('click', () => {
+      const a = b.dataset.aa;
+      if (a === 'warn') { $('#warnForm').hidden = !$('#warnForm').hidden; if (!$('#warnForm').hidden) $('#warnMsg').focus(); return; }
+      if (a === 'ban') {
+        const reason = prompt(`Ban ${u.name}? They’ll be signed out everywhere and their profile and listings will be hidden.\n\nReason (shown to them when they try to sign in):`, '');
+        if (reason === null) return;
+        run(() => api(`/api/admin/users/${u.id}/ban`, { method: 'POST', body: { reason } }), 'Account banned');
+      }
+      if (a === 'unban') run(() => api(`/api/admin/users/${u.id}/unban`, { method: 'POST', body: {} }), 'Account unbanned');
+      if (a === 'avatar') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { avatar: true } }), 'Profile picture removed');
+      if (a === 'bio') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { bio: true } }), 'Description cleared');
+      if (a === 'delete') {
+        if (!confirm(`Permanently delete ${u.name}${u.username ? ` (@${u.username})` : ''}?\n\nTheir collection, listings, friends and owned groups are removed. This can’t be undone.`)) return;
+        api(`/api/admin/users/${u.id}`, { method: 'DELETE' })
+          .then(() => { toast('Account deleted'); closeSheet(); loadAdminOverview(); loadAdminList(true); })
+          .catch((e) => toast(e.message || 'Couldn’t delete it'));
+      }
+    }));
+    $('#warnForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      run(() => api(`/api/admin/users/${u.id}/warn`, { method: 'POST', body: { reason: $('#warnReason').value, message: $('#warnMsg').value } }), `Warning sent to ${u.name}`);
+    });
+  }
+
+  function adminRemoveListing(p, backToUser = null) {
+    const seller = p.seller || adm.userCtx?.user;
+    $('#sheetBody').innerHTML = `
+      <form class="adm-user adm-form-sheet" id="rmForm">
+        <h3 id="sheetTitle">Remove listing</h3>
+        <div class="adm-listing glass"><span class="adm-thumb"><img src="${esc(p.images[0] || PLACEHOLDER)}" alt=""></span>
+          <span class="adm-main"><b>${esc(p.title)}</b><small>${money(p.price)}${seller ? ` · ${esc(seller.username ? `@${seller.username}` : seller.name)}` : ''}</small></span></div>
+        <label class="switch-row glass"><span><b>Also send a warning</b><small>They’ll get a message from “Admin” saying this listing was removed and why.</small></span>
+          <input type="checkbox" id="rmWarn" checked><i aria-hidden="true"></i></label>
+        <div id="rmWarnFields">
+          <div class="field"><label for="rmReason">Reason</label><select id="rmReason">${reasonOptions('listing')}</select></div>
+          <div class="field"><label for="rmMsg">Message (optional)</label><textarea id="rmMsg" rows="3" maxlength="1500" placeholder="e.g. Counterfeit cards aren’t allowed."></textarea></div>
+        </div>
+        <div class="listing-own"><button type="button" class="btn ghost" id="rmCancel">Cancel</button><button class="btn danger">Remove listing</button></div>
+      </form>`;
+    openSheetShell();
+    $('#rmWarn').addEventListener('change', (e) => { $('#rmWarnFields').hidden = !e.target.checked; });
+    $('#rmCancel').addEventListener('click', () => (backToUser ? openAdminUser(backToUser) : closeSheet()));
+    $('#rmForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api(`/api/admin/products/${encodeURIComponent(p.id)}`, { method: 'DELETE', body: { warn: $('#rmWarn').checked, reason: $('#rmReason').value, message: $('#rmMsg').value } });
+        toast($('#rmWarn').checked ? 'Listing removed and warning sent' : 'Listing removed');
+        marketChanged();
+        loadAdminOverview();
+        loadAdminList(true);
+        if (backToUser) openAdminUser(backToUser); else closeSheet();
+      } catch (ex) { toast(ex.message || 'Couldn’t remove it'); }
+    });
+  }
+
   /* ================= Groups ================= */
   let groups = [];
   let openGroup = null; // { id, details, tab, messages: [], lastSeq, firstSeq, board }
@@ -2655,9 +2997,10 @@
   const PENDING_JOIN = 'pokefolio.join';
 
   // Stable gradient per group name, so each group is recognisable in the list.
+  const SHIELD = '<svg viewBox="0 0 24 24" width="60%" height="60%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>';
   function groupHue(id) { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
   // Direct messages show the other person's picture; groups a coloured initial.
-  const gAvatar = (g, cls = '') => (g.kind === 'dm'
+  const gAvatar = (g, cls = '') => (g.kind === 'admin' ? `<span class="g-avatar admin ${cls}">${SHIELD}</span>` : g.kind === 'dm'
     ? `<span class="g-avatar dm ${cls}" style="--h:${groupHue(g.other?.id || g.id)}">${faceHtml(g.name, g.other?.avatar)}</span>`
     : `<span class="g-avatar ${cls}" style="--h:${groupHue(g.id)}">${nameInitial(g.name)}</span>`);
   const clock = (t) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -2695,7 +3038,13 @@
     if (user) {
       refreshGroupList();
       refreshFriends();
-      listTimer = setInterval(() => { if (!document.hidden) { refreshGroupList(); refreshFriends(); } }, 25000);
+      // Live events deliver changes instantly; this slower check is the safety net.
+      let tick = 0;
+      listTimer = setInterval(() => {
+        if (document.hidden || (liveOpen() && ++tick % 5)) return;
+        refreshGroupList();
+        refreshFriends();
+      }, 25000);
     }
   }
 
@@ -2731,7 +3080,7 @@
         </span>
         <span class="g-meta">
           <span class="g-time">${g.last ? esc(clock(g.last.createdAt)) : ''}</span>
-          ${g.unread ? `<b class="g-unread">${g.unread > 99 ? '99+' : g.unread}</b>` : g.kind === 'dm' ? '<span class="g-count">Direct</span>' : `<span class="g-count">${g.memberCount} 👤</span>`}
+          ${g.unread ? `<b class="g-unread">${g.unread > 99 ? '99+' : g.unread}</b>` : g.kind === 'dm' ? '<span class="g-count">Direct</span>' : g.kind === 'admin' ? '<span class="g-count">Official</span>' : `<span class="g-count">${g.memberCount} 👤</span>`}
         </span>
       </button>`).join('');
   }
@@ -2772,16 +3121,17 @@
         <button class="icon-btn g-back" id="gBack" aria-label="Back to groups">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
-        ${g.kind === 'dm' && g.other ? `<button class="g-who" data-prof="${esc(g.other.id)}">${gAvatar(g)}<span class="g-title"><h3>${esc(g.name)}</h3><small>Direct message · view profile</small></span></button>` : `${gAvatar(g)}
+        ${g.kind === 'admin' ? `${gAvatar(g)}<div class="g-title"><h3>PokéFolio Admin</h3><small>Official messages from the PokéFolio team</small></div>`
+    : g.kind === 'dm' && g.other ? `<button class="g-who" data-prof="${esc(g.other.id)}">${gAvatar(g)}<span class="g-title"><h3>${esc(g.name)}</h3><small>Direct message · view profile</small></span></button>` : `${gAvatar(g)}
         <div class="g-title"><h3>${esc(g.name)}</h3><small>${g.members.length} member${g.members.length === 1 ? '' : 's'}</small></div>`}
       </div>
-      ${g.kind === 'dm' ? '' : `<div class="g-tabs" role="tablist">
+      ${g.kind === 'dm' || g.kind === 'admin' ? '' : `<div class="g-tabs" role="tablist">
         ${[['chat', 'Chat'], ['board', 'Leaderboard'], ['members', 'Members']].map(([k, l]) => `<button role="tab" data-gtab="${k}" class="${openGroup.tab === k ? 'active' : ''}">${l}</button>`).join('')}
       </div>`}
       <div class="g-body" id="gBody"></div>`;
     $('#gBack').addEventListener('click', closeGroup);
     $$('[data-gtab]').forEach((b) => b.addEventListener('click', () => { openGroup.tab = b.dataset.gtab; renderGroupPane(); }));
-    if (g.kind === 'dm') openGroup.tab = 'chat';
+    if (g.kind === 'dm' || g.kind === 'admin') openGroup.tab = 'chat';
     if (openGroup.tab === 'chat') renderChat();
     else stopChatPolling();
     if (openGroup.tab === 'board') renderGroupBoard();
@@ -2813,6 +3163,14 @@
         </button>
       </form>`;
     paintMessages(true);
+    // The Admin conversation is read-only.
+    if (openGroup.details?.kind === 'admin') {
+      $('#composer').outerHTML = '<p class="composer-readonly">You can’t reply to admin messages. If you think a warning was a mistake, contact the site owner.</p>';
+      $('#loadOlder').addEventListener('click', loadOlder);
+      $('#chatMsgs').addEventListener('click', onChatClick);
+      if (!openGroup.messages.length) fetchMessages(true); else { fetchMessages(false); startChatPolling(); }
+      return;
+    }
     const input = $('#chatInput');
     const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(140, input.scrollHeight) + 'px'; };
     // A message prepared elsewhere (e.g. asking a seller about a listing) waits here until sent.
@@ -2888,7 +3246,7 @@
       if (openGroup !== g) return;
       g.details = group;
       const t = $('.g-title');
-      if (t) t.innerHTML = `<h3>${esc(group.name)}</h3><small>${group.kind === 'dm' ? 'Direct message · view profile' : `${group.members.length} member${group.members.length === 1 ? '' : 's'}`}</small>`;
+      if (t && group.kind !== 'admin') t.innerHTML = `<h3>${esc(group.name)}</h3><small>${group.kind === 'dm' ? 'Direct message · view profile' : `${group.members.length} member${group.members.length === 1 ? '' : 's'}`}</small>`;
     } catch (e) {
       if (e.status === 403 || e.status === 404) { toast('You’re no longer in this group'); closeGroup(); refreshGroupList(); }
     }
@@ -2938,11 +3296,12 @@
         </button>`;
       }
       if (m.body) content += `<div class="msg-text">${esc(m.body)}</div>`;
-      const canDelete = mine || isOwner;
+      const fromAdmin = m.kind === 'admin';
+      const canDelete = !fromAdmin && (mine || isOwner);
       html += `<div class="msg ${mine ? 'mine' : ''} ${grouped ? 'grouped' : ''}" data-seq="${m.seq}">
-          ${mine ? '' : `<span class="msg-avatar">${grouped ? '' : faceHtml(m.name, m.avatar)}</span>`}
+          ${mine ? '' : `<span class="msg-avatar ${fromAdmin ? 'admin' : ''}">${grouped ? '' : fromAdmin ? SHIELD : faceHtml(m.name, m.avatar)}</span>`}
           <div class="msg-col">
-            ${!mine && !grouped ? `<div class="msg-name">${esc(m.name)}</div>` : ''}
+            ${!mine && !grouped ? `<div class="msg-name">${fromAdmin ? '<b class="admin-name">Admin</b> <span class="admin-badge">Official</span>' : esc(m.name)}</div>` : ''}
             <div class="bubble ${m.kind}">${content}</div>
             <div class="msg-meta">${esc(clock(m.createdAt))}${canDelete ? ` · <button class="msg-del" data-del="${m.seq}">Delete</button>` : ''}</div>
           </div>
