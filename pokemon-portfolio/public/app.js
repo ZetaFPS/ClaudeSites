@@ -53,7 +53,7 @@
 
   /* ================= Session & storage ================= */
   let user = null; // null = guest
-  const emptyState = () => ({ items: [], history: {}, pricesUpdatedAt: 0, updatedAt: 0 });
+  const emptyState = () => ({ items: [], history: {}, cardHistory: {}, pricesUpdatedAt: 0, updatedAt: 0 });
   let state = emptyState();
   const storeKey = () => (user ? `pokefolio.u.${user.id}` : GUEST_KEY);
 
@@ -78,7 +78,7 @@
   async function pushRemote() {
     if (!user) return;
     try {
-      await api('/api/portfolio', { method: 'PUT', headers: { 'X-Client-Id': TAB_ID }, body: { items: state.items, history: state.history, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
+      await api('/api/portfolio', { method: 'PUT', headers: { 'X-Client-Id': TAB_ID }, body: { items: state.items, history: state.history, cardHistory: state.cardHistory || {}, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
       setSync('ok', 'Synced');
     } catch (e) {
       if (e.status === 401) return signedOut('Your session expired — please sign in again.');
@@ -402,7 +402,52 @@
   }
   function recordSnapshot() {
     state.history[dayKey()] = Math.round(totals().value * 100) / 100;
+    recordCardPrices();
     save();
+  }
+
+  /* ---------- Per-card price history (for the ▲/▼ change next to each card) ---------- */
+  // state.cardHistory[cardId|printing] = [[day, unitPrice], …] — a point only when the price
+  // changes (today's point is updated in place), at most 160 per card.
+  const dayNum = (t = Date.now()) => Math.floor(t / 864e5);
+  const priceKey = (it) => `${it.cardId}|${it.variant || ''}`;
+  function recordCardPrices() {
+    const day = dayNum();
+    const hist = (state.cardHistory ||= {});
+    const live = new Set();
+    for (const it of state.items) {
+      const k = priceKey(it);
+      live.add(k);
+      const p = itemPrice(it);
+      if (p == null) continue;
+      const arr = (hist[k] ||= []);
+      const last = arr[arr.length - 1];
+      if (last && last[0] === day) last[1] = p;
+      else if (!last || Math.abs(last[1] - p) >= 0.005) arr.push([day, p]);
+      if (arr.length > 160) arr.splice(0, arr.length - 160);
+    }
+    for (const k of Object.keys(hist)) if (!live.has(k)) delete hist[k]; // cards no longer owned
+  }
+  // How much a card's unit price moved over the chart's range (1W/1M/3M/1Y/ALL): from its price at
+  // the start of the range (or when it was first recorded, if later) to now. null = no history yet.
+  function cardChange(it) {
+    const arr = state.cardHistory?.[priceKey(it)];
+    const now = itemPrice(it);
+    if (!arr?.length || now == null) return null;
+    const start = chartRange ? dayNum() - chartRange : -Infinity;
+    let base = arr[0];
+    for (const pt of arr) { if (pt[0] <= start) base = pt; else break; }
+    const diff = now - base[1];
+    return Math.abs(diff) < 0.005 ? null : { diff, pct: base[1] ? diff / base[1] : null, since: base[0] };
+  }
+  const RANGE_WORDS = { 7: 'this week', 30: 'this month', 90: 'in 3 months', 365: 'this year', 0: 'since added' };
+  function changeHtml(it) {
+    const ch = cardChange(it);
+    if (!ch) return '';
+    const up = ch.diff > 0;
+    const total = ch.diff * it.qty;
+    return `<div class="chg num ${up ? 'up' : 'down'}" title="${up ? 'Up' : 'Down'} ${money(Math.abs(total))}${ch.pct != null ? ` (${(Math.abs(ch.pct) * 100).toFixed(1)}%)` : ''} ${RANGE_WORDS[chartRange] || ''} — since ${new Date(ch.since * 864e5).toLocaleDateString()}">
+      <span class="arrow" aria-hidden="true">${up ? '▲' : '▼'}</span>${money(Math.abs(total))}<span class="sr-only"> ${up ? 'up' : 'down'} ${RANGE_WORDS[chartRange] || ''}</span></div>`;
   }
 
   async function fetchRaw(list) {
@@ -706,6 +751,7 @@
     chartRange = +b.dataset.range;
     $$('.range-tabs button').forEach((x) => x.classList.toggle('active', x === b));
     renderChart();
+    renderList(); // each card's ▲/▼ follows the chart's range
   }));
   window.addEventListener('resize', () => { if ($('#view-portfolio').classList.contains('active') && !$('#app').hidden) renderChart(); });
 
@@ -800,6 +846,7 @@
         </div>
         <div class="price">
           <div class="v num ${flash}">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
+          ${changeHtml(it)}
           ${it.qty > 1 && price != null ? `<div class="muted num">${money(price)} ea</div>` : ''}
           ${gainHtml}
         </div>

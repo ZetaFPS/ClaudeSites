@@ -273,7 +273,16 @@ async function api(req, res, url) {
       const body = await readBody(req);
       if (!Array.isArray(body.items) || body.items.length > 10000) throw httpError(400, 'Invalid portfolio.');
       const history = body.history && typeof body.history === 'object' && !Array.isArray(body.history) ? body.history : {};
-      const doc = { items: body.items, history, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
+      // Per-card price points: { "cardId|printing": [[day, price], …] } — kept small and well-formed.
+      const cardHistory = {};
+      if (body.cardHistory && typeof body.cardHistory === 'object' && !Array.isArray(body.cardHistory)) {
+        for (const [k, arr] of Object.entries(body.cardHistory).slice(0, 10000)) {
+          if (typeof k !== 'string' || k.length > 120 || !Array.isArray(arr)) continue;
+          const pts = arr.slice(-160).filter((p) => Array.isArray(p) && Number.isInteger(p[0]) && Number.isFinite(p[1]) && p[1] >= 0).map((p) => [p[0], Math.round(p[1] * 100) / 100]);
+          if (pts.length) cardHistory[k] = pts;
+        }
+      }
+      const doc = { items: body.items, history, cardHistory, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
       await store.putPortfolio(user.id, doc);
       leaderboard.markDirty();
       // Other open tabs/devices reload the collection (the sending tab recognises its own id).

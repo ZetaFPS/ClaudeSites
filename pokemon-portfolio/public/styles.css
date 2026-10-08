@@ -1464,3 +1464,10 @@ select::-ms-expand { display: none; }
   border-color: transparent; background: linear-gradient(rgba(5, 6, 11, .9), rgba(5, 6, 11, .9)) padding-box, var(--grad) border-box; border: 1px solid transparent;
 }
 @media (prefers-reduced-motion: reduce) { .foil { animation: none; } }
+
+/* ---------- Per-card price change (portfolio rows) ---------- */
+.card-row .price .chg { display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; font-size: 11px; font-weight: 600; margin-top: 2px; white-space: nowrap; }
+.card-row .price .chg .arrow { font-size: 8.5px; line-height: 1; }
+.card-row .price .chg.up { color: var(--up); }
+.card-row .price .chg.down { color: var(--down); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

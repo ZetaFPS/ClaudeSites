@@ -140,6 +140,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   on your device), a title, a price and a description; edit or delete them any time (up to 60
   listings). There's no checkout: a buyer taps **Message seller**, which
   opens your chat with a message about the listing ready to send.
+- **Per-card price change** — under each card's price in your collection, a green ▲ or red ▼ with
+  how much that card (times its quantity) went up or down over the range picked on the chart
+  (1W, 1M, 3M, 1Y, or ALL = since it was added); hover for the % and start date. Each card's price
+  is recorded whenever prices refresh (a point only when it changes, ≤160 per card) and syncs with
+  your account, so the change appears once a card's price has moved since it was first recorded.
 - **Live updates** — while the app is open it keeps a live connection (Server-Sent Events,
   `GET /api/events`) to the server. New messages pop up in the corner (tap to open the chat), the
   Messages/Friends badges and the browser tab's `(n)` count update instantly, friend requests pop
