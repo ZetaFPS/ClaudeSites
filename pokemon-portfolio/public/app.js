@@ -1882,7 +1882,7 @@
     const psa10 = graded?.prices?.['PSA 10'];
     $('#rawValue').innerHTML = r?.price != null ? `${r.approx ? '<span class="approx">≈</span>' : ''}${money(r.price)}` : (loading ? '<span class="skeleton-line"></span>' : '—');
     $('#rawFoot').textContent = r?.price != null
-      ? `${variant ? (VARIANT_LABELS[variant] || variant) + ' · ' : ''}${qty > 1 ? `${qty}× = ${money(r.price * qty)}` : r.approx ? (r.source === 'Cardmarket' ? 'EU market price' : 'lowest listing') : 'market price'}`
+      ? `${variant ? (VARIANT_LABELS[variant] || variant) + ' · ' : ''}${qty > 1 ? `${qty}× = ${money(r.price * qty)}` : r.savedAt ? `PriceCharting price saved ${timeAgo(r.savedAt)}` : r.approx ? (r.source === 'Cardmarket' ? 'EU market price' : 'lowest listing') : 'market price'}`
       : (loading ? 'Fetching market price…' : 'No sales data yet');
     $('#rawSrc').textContent = r?.source || '';
     $('#rawSrc').title = r?.note || '';

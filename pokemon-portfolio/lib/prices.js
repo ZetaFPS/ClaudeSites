@@ -837,13 +837,13 @@ async function priceInfo(card, variant) {
 // Raw (ungraded, near-mint) price in USD for one printing, from the first source that has one:
 //   0. PriceCharting "Ungraded", when PriceCharting is reachable and has a live price for this card
 //      (looked up in the last 12 hours; otherwise a background lookup is started for next time)
+//   ½. the last PriceCharting "Ungraded" price saved for this card (shown as PokéFolio)
 //   1. TCGplayer market price (Pokémon TCG API)       — recent sales
 //   2. TCGplayer market price (TCGdex)                 — recent sales
 //   3. PriceCharting "Ungraded" (live lookup now)      — recent eBay sales
 //   4. Cardmarket trend price, € converted to $        — recent European sales
 //   5. TCGplayer lowest current listing                — asking price (last resort)
-// Sources 4–5 are marked `approx` so the app can say so. Saved (stale) PriceCharting copies are
-// never used for raw prices — only answers from PriceCharting itself.
+// Sources 4–5 are marked `approx` so the app can say so.
 async function rawPrice(id, variant) {
   const card = await getCard(id);
   const info = await priceInfo(card, variant);
@@ -852,6 +852,15 @@ async function rawPrice(id, variant) {
     return { price: live.value.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: live.at };
   }
   if (!live) pcWarm(info);
+  // Not live right now: the last raw price PriceCharting gave for this card (saved in the database
+  // whenever it answers) beats TCGplayer. Shown as PokéFolio, with when it was saved.
+  const saved = info.name && info.number ? pcSaved.map.get(pcKey(info)) : null;
+  if (saved?.value?.prices?.Ungraded != null) {
+    return {
+      price: saved.value.prices.Ungraded, source: 'PokéFolio', variant: info.variant, savedAt: saved.at, updatedAt: saved.at,
+      note: `Last PriceCharting price, saved ${new Date(saved.at).toISOString().slice(0, 10)}`,
+    };
+  }
   const tp = tcgplayerPrice(card, info.variant);
   if (tp) return { price: tp.price, source: 'TCGplayer', variant: tp.variant, updatedAt: card.tcgplayer?.updatedAt || null };
   const dex = id.startsWith('tcgdex') ? null : await tcgdexMatch(info).catch(() => null);
