@@ -206,8 +206,45 @@
     paintAdminAccess();
     handleInviteLink();
     setTimeout(promptUsername, 900);
+    setTimeout(offerInstall, 4000);
     if (state.items.length && (Date.now() - state.pricesUpdatedAt > STALE_MS || state.priceVersion !== PRICE_VERSION)) refreshPrices({ silent: true });
     else if (state.items.length) recordSnapshot();
+  }
+
+  /* ---------- Home-screen app ---------- */
+  // Opened from the home-screen icon: full screen, no browser bars.
+  const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (standalone()) document.documentElement.classList.add('standalone');
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  let installEvent = null; // Chrome/Android/desktop: the browser's own install prompt
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
+  window.addEventListener('appinstalled', () => { installEvent = null; $('.install-hint')?.remove(); });
+  const INSTALL_KEY = 'pokefolio.installHint';
+  // A small banner (once every 30 days until installed) explaining how to add the app.
+  function offerInstall() {
+    if (standalone() || $('.install-hint')) return;
+    if (Date.now() - (+lsGet(INSTALL_KEY) || 0) < 30 * 864e5) return;
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (!ios && !installEvent) return;
+    const share = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+    const el = document.createElement('div');
+    el.className = 'install-hint glass';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Install PokéFolio');
+    el.innerHTML = `<img src="/icons/icon-192.png" alt="" width="40" height="40">
+      <div class="install-text"><b>Get the PokéFolio app</b><span>${ios ? `Tap ${share} <b>Share</b>, then <b>Add to Home Screen</b>.` : 'Install it for full-screen use and a home-screen icon.'}</span></div>
+      ${ios ? '' : '<button class="btn primary sm" data-install>Install</button>'}
+      <button class="icon-btn sm" data-close aria-label="Not now">×</button>`;
+    document.body.appendChild(el);
+    const done = () => { lsSet(INSTALL_KEY, String(Date.now())); el.remove(); };
+    el.querySelector('[data-close]').addEventListener('click', done);
+    el.querySelector('[data-install]')?.addEventListener('click', async () => {
+      if (!installEvent) return done();
+      installEvent.prompt();
+      await installEvent.userChoice.catch(() => {});
+      installEvent = null;
+      done();
+    });
   }
 
   function initials() {

@@ -1514,3 +1514,28 @@ select::-ms-expand { display: none; }
 .icon-btn.sm { width: 30px; height: 30px; border-radius: 9px; font-size: 16px; flex: none; }
 @media (min-width: 1024px) { .sheet:has(.lot-form) { max-width: 640px; } }
 .card-row .price .chg.flat { color: var(--text-3); }
+
+/* ---------- Home-screen app ---------- */
+/* Opened from the home screen the page runs under the iPhone status bar / notch. */
+@media (max-width: 1023px) {
+  .topbar { padding-top: calc(14px + env(safe-area-inset-top)); }
+  .app::before { height: calc(84px + env(safe-area-inset-top)); }
+}
+.auth { padding-top: calc(24px + env(safe-area-inset-top)); }
+.sheet { max-height: min(94dvh, calc(100dvh - env(safe-area-inset-top) - 8px)); }
+.lightbox { padding-top: calc(24px + env(safe-area-inset-top)); }
+.reveal { padding-top: calc(20px + env(safe-area-inset-top)); }
+.standalone body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+.standalone input, .standalone textarea, .standalone [contenteditable], .standalone .bubble { -webkit-user-select: text; user-select: text; }
+.install-hint {
+  position: fixed; z-index: 65; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--tabbar-h) + 26px + env(safe-area-inset-bottom)); width: min(440px, calc(100% - 24px));
+  display: flex; align-items: center; gap: 12px; padding: 12px 10px 12px 12px; border-radius: 18px;
+  background: rgba(14, 17, 34, .95); border: 1px solid rgba(34, 211, 238, .35); box-shadow: 0 10px 40px #000c;
+  animation: rise2 .3s;
+}
+.install-hint img { border-radius: 10px; flex: none; }
+.install-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.install-text > b { color: var(--text); font-size: 14px; }
+.install-text svg { vertical-align: -2px; color: var(--cyan); }
+@media (min-width: 1024px) { .install-hint { bottom: 24px; } }

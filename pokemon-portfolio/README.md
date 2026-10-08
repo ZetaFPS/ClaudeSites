@@ -231,6 +231,21 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
 - Card details: set, number, rarity, artist, release date, HP, types, attacks, flavor text,
   TCGplayer prices by printing and Cardmarket (EUR) prices.
 
+## Install it as a phone app
+
+The site installs as a full-screen home-screen app — same server, same accounts and cards, same
+look; nothing to publish to an app store.
+
+- **iPhone / iPad:** open the site in Safari, tap **Share**, then **Add to Home Screen**. It opens
+  full screen from its own icon, with no browser bars, and fits around the notch and home bar.
+- **Android / desktop Chrome or Edge:** use the **Install** button the app offers (or the browser's
+  install icon / menu).
+
+Phones and tablets get a one-time hint explaining this a few seconds after opening the app (shown
+again after 30 days if dismissed, never once installed). Pieces: `public/manifest.webmanifest`,
+`public/icons/` (rebuild with `node scripts/make-icons.js`), the Apple meta tags in `index.html`,
+and `public/sw.js` — a service worker that caches nothing, so the app always runs the latest site.
+
 ## Keeping accounts when you update the site
 
 Accounts, collections and the scanner's visual index are stored in **PostgreSQL** whenever `DATABASE_URL` is set. The database
