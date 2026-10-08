@@ -148,11 +148,11 @@
       await enterApp();
       toast(authMode === 'signup' ? `Welcome, ${user.name}!` : `Welcome back, ${user.name}`);
     } catch (ex) {
-      err.textContent = ex.status ? ex.message : 'Can’t reach the PokéFolio server.';
+      err.textContent = ex.status === 401 && authMode !== 'signup' ? 'Email or password is incorrect.' : ex.status ? ex.message : 'Can’t reach the PokéFolio server.';
       err.hidden = false;
     } finally {
       btn.disabled = false;
-      setAuthMode(authMode);
+      btn.textContent = authMode === 'signup' ? 'Create account' : 'Sign in'; // keeps the error visible
     }
   });
   $('#guestBtn').addEventListener('click', () => {
@@ -1198,7 +1198,10 @@
     const text = $('#searchInput').value.trim();
     if (!text) return;
     $('#searchInput').blur();
-    runSearch(parseSearchText(text), `“${text}”`);
+    // Phones: the scanner stays on top, so jump down to the results once they're in.
+    runSearch(parseSearchText(text), `“${text}”`).then(() => {
+      if (matchMedia('(max-width: 1023px)').matches && !$('#resultsHead').hidden) $('#resultsHead').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   });
 
   /* ================= Camera + OCR ================= */

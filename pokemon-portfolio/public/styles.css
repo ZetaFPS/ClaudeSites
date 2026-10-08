@@ -804,12 +804,8 @@ main > .storage-warn { margin: 0 16px 16px; }
 }
 @media (max-width: 1023px) {
   .tab-secondary { display: none; }
-  /* Add page on phones: search (and its results) above the scanner */
-  .scan-layout { display: flex; flex-direction: column; }
-  .find-col { display: contents; }
-  #searchForm { order: -2; margin-top: 4px; }
-  #resultsHead, #results { order: -1; }
-  #results:not(:empty) { margin-bottom: 18px; }
+  /* Add page on phones: scanner on top, then the search bar and its results */
+  #searchForm { margin-top: 14px; }
 }
 @media (min-width: 1024px) { .tab-more, .more-menu { display: none !important; } }
 @media (min-width: 1024px) { .tab-badge { position: static; margin-left: auto; } }

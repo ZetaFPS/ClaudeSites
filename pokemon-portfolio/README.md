@@ -114,8 +114,8 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   than the raw card (PSA 10 prices are looked up only when you choose this sort, then cached).
 - **Navigation** — on phones the bottom bar has **Portfolio · Messages · Add · Friends · More**;
   **More** opens Index, Packs, Marketplace and Grade (beta). On wide screens every page is in the
-  sidebar. **Add** is where you scan or search for a card (on phones the search bar and its results
-  sit above the scanner).
+  sidebar. **Add** is where you scan or search for a card (on phones the scanner stays on top with the
+  search bar under it, and the page scrolls down to the results when they arrive).
 - **Marketplace** — every collector's store listings in one place, newest first or sorted by
   price, 24 at a time. Search matches every word you type against titles, descriptions and seller
   names/usernames. **+ Sell something** posts a listing straight from the page. Anyone can browse;
