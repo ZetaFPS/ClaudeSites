@@ -29,7 +29,7 @@ function createAuth(store) {
     return {
       id: u.id, email: u.email, name: u.name, username: u.username || null, bio: u.bio || '', createdAt: u.createdAt,
       showOnLeaderboard: u.showOnLeaderboard !== false, showCollection: u.showCollection === true, avatar: avatarUrl(u.id, u.avatarAt),
-      ...(isAdmin(u) ? { isAdmin: true } : {}),
+      ...(isAdmin(u) ? { isAdmin: true } : isMod(u) ? { isMod: true } : {}),
     };
   }
 
@@ -94,6 +94,10 @@ function createAuth(store) {
 // ADMIN_EMAILS=you@example.com. Set it in the host's environment settings, never in the code.
 const adminEmails = () => new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean));
 const isAdmin = (u) => !!u?.email && adminEmails().has(String(u.email).toLowerCase());
+// Moderators: given (or removed) by an admin in the admin panel; stored on the account.
+// They can warn, remove listings and edit card prices — not ban, delete or change roles.
+const isMod = (u) => !!u && !isAdmin(u) && u.role === 'mod';
+const isStaff = (u) => isAdmin(u) || isMod(u);
 
 // Usernames: what friends type to add you. 3–20 letters, numbers, dots or underscores, stored lowercase.
 function checkUsername(raw) {
@@ -112,4 +116,4 @@ function httpError(status, message) {
   return e;
 }
 
-module.exports = { createAuth, httpError, avatarUrl, checkUsername, isAdmin };
+module.exports = { createAuth, httpError, avatarUrl, checkUsername, isAdmin, isMod, isStaff };

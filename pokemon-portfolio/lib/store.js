@@ -210,9 +210,9 @@ function fileStore(dir) {
     async deleteProductImage(id) { if (data.productImages[id]) { delete data.productImages[id]; save(); } },
 
     // --- moderation ---
-    async listUsers({ words = [], offset = 0, limit = 30 } = {}) {
+    async listUsers({ words = [], offset = 0, limit = 30, byEmail = true } = {}) {
       const rows = Object.values(data.users).filter((u) => {
-        const hay = `${u.name} ${u.username || ''} ${u.email}`.toLowerCase();
+        const hay = `${u.name} ${u.username || ''} ${byEmail ? u.email : ''}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       }).sort((a, b) => b.createdAt - a.createdAt);
       return {
@@ -410,6 +410,7 @@ async function pgStore(url, legacyDir) {
     );
     ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at BIGINT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT;
     CREATE TABLE IF NOT EXISTS warnings (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -442,7 +443,7 @@ async function pgStore(url, legacyDir) {
   const toUser = (r) => r && {
     id: r.id, email: r.email, name: r.name, passHash: r.pass_hash, createdAt: +r.created_at, showOnLeaderboard: r.show_on_leaderboard !== false,
     avatarAt: r.avatar_at != null ? +r.avatar_at : null, username: r.username || null, bio: r.bio || '', showCollection: r.show_collection === true,
-    bannedAt: r.banned_at != null ? +r.banned_at : null, banReason: r.ban_reason || null,
+    bannedAt: r.banned_at != null ? +r.banned_at : null, banReason: r.ban_reason || null, role: r.role || null,
   };
   const dupe = (e) => {
     if (e.code !== '23505') return e;
@@ -484,6 +485,7 @@ async function pgStore(url, legacyDir) {
       if (fields.showCollection != null) { vals.push(!!fields.showCollection); sets.push(`show_collection = $${vals.length}`); }
       if (fields.bannedAt !== undefined) { vals.push(fields.bannedAt); sets.push(`banned_at = $${vals.length}`); }
       if (fields.banReason !== undefined) { vals.push(fields.banReason); sets.push(`ban_reason = $${vals.length}`); }
+      if (fields.role !== undefined) { vals.push(fields.role); sets.push(`role = $${vals.length}`); }
       if (sets.length) {
         vals.push(id);
         try { await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); } catch (e) { throw dupe(e); }
@@ -653,12 +655,12 @@ async function pgStore(url, legacyDir) {
     async deleteProductImage(id) { await q('DELETE FROM product_images WHERE id = $1', [id]); },
 
     // --- moderation ---
-    async listUsers({ words = [], offset = 0, limit = 30 } = {}) {
+    async listUsers({ words = [], offset = 0, limit = 30, byEmail = true } = {}) {
       const vals = [];
       const where = words.map((w) => {
         vals.push(`%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
         const n = `$${vals.length}`;
-        return `(u.name ILIKE ${n} OR u.username ILIKE ${n} OR u.email ILIKE ${n})`;
+        return `(u.name ILIKE ${n} OR u.username ILIKE ${n}${byEmail ? ` OR u.email ILIKE ${n}` : ''})`;
       });
       vals.push(limit, offset);
       const { rows } = await q(`SELECT u.*, COUNT(*) OVER () AS total,

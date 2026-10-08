@@ -55,8 +55,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   were saved, instead of dropping to estimates. **Admin → Price sources → Test PriceCharting now**
   makes a live request from the server and shows what came back (HTTP status, bot-check page,
   prices found) — the quickest way to tell a block from a page change.
-  **Admin → Card prices** lets admins look up a card and type in its PSA 10 / 9 / 8 / 7 and raw prices
-  (plus a source note). These go into the same fallback database: they never replace live
+  **Admin → Card prices** lets admins and moderators look up a card and type in its PSA 10 / 9 / 8 / 7
+  and raw prices (plus a source note) — separately for each printing when the card has several
+  (Holofoil, Reverse Holo, 1st Edition…), so each printing shows its own price; a printing left
+  empty gets no typed price. These go into the same fallback database: they never replace live
   PriceCharting prices, and are used only when PriceCharting has no live result for that card (the
   newer of an admin price and a saved PriceCharting copy wins). Cards then label their graded
   prices **PokéFolio** (PriceCharting is only named when it supplied the prices live), with when they were added; grades left empty are estimated from
@@ -153,6 +155,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   - **Delete an account** permanently, with its collection, listings, friends and picture; groups it
     owned pass to their longest-standing member.
   Admins can't ban or delete themselves or other admins. The Warnings tab lists recent warnings.
+- **Moderators** — an admin opens an account in the admin panel and taps **Make moderator** (or
+  **Remove moderator**); it takes effect live. Moderators see the panel and can send warnings, remove
+  listings and edit card prices. They can't ban, unban or delete accounts, remove profile pictures or
+  descriptions, make moderators, warn admins or other moderators, or see (or search by) emails.
 - **Pre-grading (beta, still in development)** — upload photos of the front and back for a PSA-style estimate with sub-grades.
   Photos taken at an angle are perspective-corrected first (the card's four edges are fitted as
   straight lines and the card is un-skewed onto a flat 63×88 mm canvas), so ordinary phone shots

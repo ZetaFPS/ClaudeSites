@@ -615,9 +615,23 @@ async function attachStore(store) {
 // live result for the card (unreachable, or no match), and shown as "PokéFolio".
 const MANUAL_KEY = 'manual-graded';
 const MANUAL_GRADES = ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7', 'Ungraded'];
-const manual = new Map(); // cardId -> { prices, note, by, at, card: { name, set, number, image } }
-const listManualPrices = () => [...manual.entries()].map(([id, v]) => ({ id, ...v })).sort((a, b) => b.at - a.at);
-const getManualPrices = (id) => manual.get(id) || null;
+// cardId -> { variants: { [printing]: { 'PSA 10': n, … } }, note, by, at, card: { name, set, number, image, variants } }
+// Printing keys are TCGplayer's ("holofoil", "reverseHolofoil", "normal", …); "" = any printing.
+// (Entries saved before printings existed have a single `prices` — read as "any printing".)
+const manual = new Map();
+const manualVariants = (e) => (e?.variants ? e.variants : e?.prices ? { '': e.prices } : {});
+const listManualPrices = () => [...manual.entries()].map(([id, v]) => ({ id, ...v, variants: manualVariants(v) })).sort((a, b) => b.at - a.at);
+const getManualPrices = (id) => (manual.get(id) ? { ...manual.get(id), variants: manualVariants(manual.get(id)) } : null);
+// The prices typed in for this printing, else for "any printing".
+function manualFor(id, variant) {
+  const v = manualVariants(manual.get(id));
+  return (variant && v[variant]) || v[''] || null;
+}
+// A card's printings, in the usual order (for the admin form).
+const cardVariants = (card) => {
+  const keys = Object.keys(card?.tcgplayer?.prices || {});
+  return [...VARIANT_ORDER.filter((k) => keys.includes(k)), ...keys.filter((k) => !VARIANT_ORDER.includes(k))];
+};
 async function setManualPrices(id, entry) {
   if (entry) manual.set(id, { ...entry, at: Date.now() });
   else manual.delete(id);
@@ -855,9 +869,10 @@ async function fullPrices(id, variant) {
   // used instead. It never replaces live PriceCharting prices.
   let fromDb = !!graded?.staleSince;
   const typed = manual.get(id);
-  if (typed && (!graded || (graded.staleSince && typed.at > graded.staleSince))) {
+  const typedPrices = manualFor(id, info.variant);
+  if (typedPrices && (!graded || (graded.staleSince && typed.at > graded.staleSince))) {
     graded = {
-      source: 'PokéFolio', origin: 'manual', savedAt: typed.at, note: typed.note || '', prices: { ...typed.prices }, warnings: [],
+      source: 'PokéFolio', origin: 'manual', savedAt: typed.at, note: typed.note || '', prices: { ...typedPrices }, warnings: [],
       url: `${PC}/search-products?type=prices&q=${encodeURIComponent(pcQueries({ ...info, name: info.name || card.name })[0])}`, title: null,
     };
     fromDb = true;
@@ -981,6 +996,6 @@ async function pcCardImage(id) {
 
 module.exports = {
   search, getCard, primeCards, rawPrice, fullPrices, imageCandidates, pcCardImage, parseId, boosterImage, PC_IMG, pcStatus,
-  attachStore, flushSavedPrices, pcDiagnose, tpBoosterImages, listManualPrices, getManualPrices, setManualPrices, MANUAL_GRADES,
+  attachStore, flushSavedPrices, pcDiagnose, tpBoosterImages, listManualPrices, getManualPrices, setManualPrices, MANUAL_GRADES, cardVariants,
   _test: { pcState, packImageFrom, scoreProduct, pickProduct, parseProductPage, setMatches, buildQueries, fromTcgdex, fillGradedEstimates, cardmarketEur, englishName, tcgdexSearch, cache },
 };

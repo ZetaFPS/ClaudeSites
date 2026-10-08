@@ -2711,6 +2711,10 @@
     on('message', onLiveMessage);
     on('friends', onLiveFriends);
     on('portfolio', onLivePortfolio);
+    on('account', async () => {
+      // e.g. made (or no longer) a moderator: refresh what this account can see
+      try { user = (await api('/api/auth/me')).user || user; paintAdminAccess(); } catch { /* next time */ }
+    });
     on('banned', (d) => {
       disconnectLive();
       lsDel(storeKey());
@@ -2779,13 +2783,18 @@
 
   /* ================= Admin panel (accounts in ADMIN_EMAILS only) ================= */
   const adm = { tab: 'users', q: '', items: [], total: 0, more: false, loading: false, req: 0, overview: null };
+  // Admins and moderators see the panel; some actions are admin-only.
+  const isStaffUser = () => !!(user?.isAdmin || user?.isMod);
   function paintAdminAccess() {
-    const on = !!user?.isAdmin;
+    const on = isStaffUser();
     $$('.admin-only').forEach((el) => { el.hidden = !on; });
+    const pill = $('#view-admin .admin-pill');
+    if (pill) pill.textContent = user?.isAdmin ? 'Admin' : 'Moderator';
+    if (adm.tab === 'users') $('#admQuery').placeholder = user?.isAdmin ? 'Search accounts by name, @username or email' : 'Search accounts by name or @username';
     if (!on && $('#view-admin').classList.contains('active')) go('portfolio');
   }
   function openAdmin() {
-    if (!user?.isAdmin) { go('portfolio'); return; }
+    if (!isStaffUser()) { go('portfolio'); return; }
     loadAdminOverview();
     loadAdminList(true);
   }
@@ -2796,7 +2805,7 @@
     $$('#admTabs [data-at]').forEach((x) => x.classList.toggle('active', x === b));
     $('#admSearch').hidden = adm.tab === 'warnings';
     $('#admQuery').value = '';
-    $('#admQuery').placeholder = { users: 'Search accounts by name, @username or email', products: 'Search listings by title, description or seller', prices: 'Find a card — e.g. “Charizard 4/102” or “Umbreon VMAX 215”' }[adm.tab];
+    $('#admQuery').placeholder = { users: user?.isAdmin ? 'Search accounts by name, @username or email' : 'Search accounts by name or @username', products: 'Search listings by title, description or seller', prices: 'Find a card — e.g. “Charizard 4/102” or “Umbreon VMAX 215”' }[adm.tab];
     adm.q = '';
     loadAdminList(true);
   });
@@ -2814,7 +2823,7 @@
       if (adm.tab === 'warnings') paintAdminList();
       paintPriceCheck();
     } catch (e) {
-      if (e.status === 404) { user = { ...user, isAdmin: false }; paintAdminAccess(); }
+      if (e.status === 404) { user = { ...user, isAdmin: false, isMod: false }; paintAdminAccess(); }
     }
   }
   // "Price sources": a live test request to PriceCharting from the server, with what came back.
@@ -2871,6 +2880,12 @@
   /* ---- Card prices: graded prices admins type in (fallback "PokéFolio") ---- */
   const cp = { saved: [], grades: ['PSA 10', 'Grade 9', 'Grade 8', 'Grade 7', 'Ungraded'], results: null, loading: false, req: 0 };
   const gradeName = (g) => (g === 'Ungraded' ? 'Raw (ungraded)' : g.replace('Grade', 'PSA'));
+  const printingName = (k) => (k ? VARIANT_LABELS[k] || k : 'All printings');
+  // A card's printings (holo, reverse holo, …) in the usual order.
+  const printingsOf = (card) => {
+    const keys = Object.keys(card?.tcgplayer?.prices || {});
+    return [...VARIANT_ORDER.filter((k) => keys.includes(k)), ...keys.filter((k) => !VARIANT_ORDER.includes(k))];
+  };
   async function loadCardPriceAdmin() {
     const req = ++cp.req;
     cp.loading = true;
@@ -2897,7 +2912,7 @@
       <button class="adm-listing glass cp-row" data-cp="${esc(c.id)}">
         <span class="adm-thumb card"><img ${imgAttrs({ id: c.id, images: { small: c.image || c.images?.small } })} alt="" loading="lazy"></span>
         <span class="adm-main"><b>${esc(c.name)}</b><small>${esc(c.set?.name || c.set || '')}${c.number ? ` · #${esc(c.number)}` : ''}${c.lang === 'ja' ? ' · Japanese' : ''}</small>
-          ${e ? `<small class="cp-saved">${Object.entries(e.prices).map(([g, v]) => `${esc(gradeName(g))} ${money(v)}`).join(' · ')} — added ${esc(timeAgo(e.at))}</small>` : ''}</span>
+          ${e ? `${Object.entries(e.variants || {}).map(([vk, ps]) => `<small class="cp-saved">${esc(printingName(vk))}: ${Object.entries(ps).map(([g, v]) => `${esc(gradeName(g))} ${money(v)}`).join(' · ')}</small>`).join('')}<small class="muted">added ${esc(timeAgo(e.at))}</small>` : ''}</span>
         <span class="btn sm ${e ? '' : 'primary'}">${e ? 'Edit' : 'Add prices'}</span>
       </button>`;
     let html;
@@ -2919,18 +2934,29 @@
     if (!b) return;
     const c = cp.results?.find((x) => x.id === b.dataset.cp);
     const saved = cp.saved.find((x) => x.id === b.dataset.cp);
-    openCardPriceForm(c ? { id: c.id, name: c.name, set: c.set?.name || '', number: c.number, image: c.images?.small, lang: c.lang } : { id: saved.id, ...saved.card }, saved);
+    openCardPriceForm(c ? { id: c.id, name: c.name, set: c.set?.name || '', number: c.number, image: c.images?.small, lang: c.lang, variants: printingsOf(c) } : { id: saved.id, ...saved.card }, saved);
   });
   function openCardPriceForm(card, saved) {
+    // One section per printing when the card has several (holo, reverse holo, …); otherwise one for all.
+    const savedVariants = saved?.variants || {};
+    const printings = card.variants?.length ? card.variants : [];
+    const sections = printings.length > 1 ? [...printings] : [''];
+    for (const k of Object.keys(savedVariants)) if (!sections.includes(k)) sections.push(k);
     $('#sheetBody').innerHTML = `
       <form class="adm-user adm-form-sheet" id="cpForm" novalidate>
         <h3 id="sheetTitle">Graded prices</h3>
         <div class="adm-listing glass"><span class="adm-thumb card"><img ${imgAttrs({ id: card.id, images: { small: card.image } })} alt=""></span>
           <span class="adm-main"><b>${esc(card.name)}</b><small>${esc(card.set || '')}${card.number ? ` · #${esc(card.number)}` : ''}${card.lang === 'ja' ? ' · Japanese' : ''}</small></span></div>
-        <p class="muted">Used only when PriceCharting has no live prices for this card; shown as coming from <b>PokéFolio</b>. Leave grades you don’t know empty — they’re estimated from the ones you enter.</p>
-        <div class="cp-grid">${cp.grades.map((g) => `
-          <div class="field"><label for="cp-${esc(g.replace(/\s/g, ''))}">${esc(gradeName(g))} (USD)</label>
-            <input id="cp-${esc(g.replace(/\s/g, ''))}" data-grade="${esc(g)}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—" value="${saved?.prices?.[g] ?? ''}"></div>`).join('')}</div>
+        <p class="muted">Used only when PriceCharting has no live prices for this card; shown as coming from <b>PokéFolio</b>. Leave grades you don’t know empty — they’re estimated from the ones you enter.${sections.length > 1 ? ' Each printing has its own prices; a printing left empty isn’t saved.' : ''}</p>
+        ${sections.map((vk) => `
+        <fieldset class="cp-variant glass" data-variant="${esc(vk)}">
+          <legend>${esc(printingName(vk))}</legend>
+          <div class="cp-grid">${cp.grades.map((g) => {
+    const fid = `cp-${vk || 'any'}-${g.replace(/\s/g, '')}`;
+    return `<div class="field"><label for="${esc(fid)}">${esc(gradeName(g))} (USD)</label>
+              <input id="${esc(fid)}" data-grade="${esc(g)}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—" value="${savedVariants[vk]?.[g] ?? ''}"></div>`;
+  }).join('')}</div>
+        </fieldset>`).join('')}
         <div class="field"><label for="cpNote">Source / note (optional)</label><input id="cpNote" maxlength="300" placeholder="e.g. Average of 3 eBay sales, Oct 2026" value="${esc(saved?.note || '')}"></div>
         <p class="auth-error" id="cpErr" role="alert" hidden></p>
         <div class="listing-own">
@@ -2946,13 +2972,17 @@
     });
     $('#cpForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const pricesIn = {};
-      $$('#cpForm [data-grade]').forEach((i) => { if (i.value.trim() !== '') pricesIn[i.dataset.grade] = i.value; });
+      const variants = {};
+      $$('#cpForm .cp-variant').forEach((fs) => {
+        const ps = {};
+        $$('[data-grade]', fs).forEach((i) => { if (i.value.trim() !== '') ps[i.dataset.grade] = i.value; });
+        if (Object.keys(ps).length) variants[fs.dataset.variant] = ps;
+      });
       const err = $('#cpErr');
       err.hidden = true;
-      if (!Object.keys(pricesIn).length) { err.textContent = 'Enter at least one price.'; err.hidden = false; return; }
+      if (!Object.keys(variants).length) { err.textContent = 'Enter at least one price.'; err.hidden = false; return; }
       try {
-        await api(`/api/admin/card-prices/${encodeURIComponent(card.id)}`, { method: 'PUT', body: { prices: pricesIn, note: $('#cpNote').value } });
+        await api(`/api/admin/card-prices/${encodeURIComponent(card.id)}`, { method: 'PUT', body: { variants, note: $('#cpNote').value } });
         toast(`Saved prices for ${card.name}`);
         for (const k of [...psaCache.keys()]) if (k.startsWith(`${card.id}|`)) psaCache.delete(k); // re-read on next PSA sort
         closeSheet();
@@ -2984,8 +3014,8 @@
         <button class="adm-row glass ${u.bannedAt ? 'banned' : ''}" data-adm-user="${esc(u.id)}">
           <span class="pod-avatar sm">${faceHtml(u.name, u.avatar)}</span>
           <span class="adm-main">
-            <b>${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.admin ? ' <i class="tag admin">Admin</i>' : ''}${u.bannedAt ? ' <i class="tag banned">Banned</i>' : ''}</b>
-            <small>${esc(u.email)} · joined ${esc(new Date(u.createdAt).toLocaleDateString())}</small>
+            <b>${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.admin ? ' <i class="tag admin">Admin</i>' : ''}${u.mod ? ' <i class="tag mod">Mod</i>' : ''}${u.bannedAt ? ' <i class="tag banned">Banned</i>' : ''}</b>
+            <small>${u.email ? `${esc(u.email)} · ` : ''}joined ${esc(new Date(u.createdAt).toLocaleDateString())}</small>
           </span>
           <span class="adm-counts"><span>${u.productCount ?? 0} listing${u.productCount === 1 ? '' : 's'}</span><span class="${u.warningCount ? 'warned' : ''}">${u.warningCount ?? 0} warning${u.warningCount === 1 ? '' : 's'}</span></span>
         </button>`).join('');
@@ -3027,6 +3057,7 @@
     }
     adm.userCtx = d;
     const u = d.user;
+    const amAdmin = !!user?.isAdmin;
     if (!adm.overview) await loadAdminOverview();
     $('#sheetBody').innerHTML = `
       <div class="adm-user">
@@ -3034,19 +3065,20 @@
           <span class="pod-avatar lg">${faceHtml(u.name, u.avatar)}</span>
           <div class="profile-id">
             <h3 id="sheetTitle">${esc(u.name)}</h3>
-            <p class="muted">${u.username ? `@${esc(u.username)} · ` : ''}${esc(u.email)}</p>
-            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}</p>
+            <p class="muted">${[u.username ? `@${esc(u.username)}` : '', u.email ? esc(u.email) : ''].filter(Boolean).join(' · ')}</p>
+            <p class="muted">Joined ${esc(new Date(u.createdAt).toLocaleDateString())}${u.admin ? ' · <i class="tag admin">Admin</i>' : ''}${u.mod ? ' · <i class="tag mod">Moderator</i>' : ''}</p>
           </div>
         </div>
         ${u.bannedAt ? `<p class="adm-banned">Banned ${esc(timeAgo(u.bannedAt))}${u.banReason ? ` — ${esc(u.banReason)}` : ''}</p>` : ''}
         ${u.bio ? `<p class="profile-bio">${esc(u.bio)}</p>` : '<p class="profile-bio empty">No profile description.</p>'}
         <div class="adm-actions">
-          <button class="btn primary" data-aa="warn">⚠️ Send warning</button>
-          ${u.admin ? '' : u.bannedAt ? '<button class="btn" data-aa="unban">Unban</button>' : '<button class="btn danger" data-aa="ban">Ban account</button>'}
+          ${amAdmin || !(u.admin || u.mod) ? '<button class="btn primary" data-aa="warn">⚠️ Send warning</button>' : ''}
+          ${!amAdmin || u.admin ? '' : u.bannedAt ? '<button class="btn" data-aa="unban">Unban</button>' : '<button class="btn danger" data-aa="ban">Ban account</button>'}
           ${u.bannedAt ? '' : `<button class="btn ghost" data-prof="${esc(u.id)}">View profile</button>`}
-          ${u.avatar ? '<button class="btn ghost" data-aa="avatar">Remove profile picture</button>' : ''}
-          ${u.bio ? '<button class="btn ghost" data-aa="bio">Clear description</button>' : ''}
-          ${u.admin ? '' : '<button class="btn danger" data-aa="delete">Delete account</button>'}
+          ${amAdmin && u.avatar ? '<button class="btn ghost" data-aa="avatar">Remove profile picture</button>' : ''}
+          ${amAdmin && u.bio ? '<button class="btn ghost" data-aa="bio">Clear description</button>' : ''}
+          ${amAdmin && !u.admin ? `<button class="btn ghost" data-aa="${u.mod ? 'unmod' : 'mod'}">${u.mod ? 'Remove moderator' : 'Make moderator'}</button>` : ''}
+          ${amAdmin && !u.admin ? '<button class="btn danger" data-aa="delete">Delete account</button>' : ''}
         </div>
         <form class="adm-form glass" id="warnForm" hidden>
           <div class="field"><label for="warnReason">Reason</label><select id="warnReason">${reasonOptions('listing')}</select></div>
@@ -3074,6 +3106,11 @@
         run(() => api(`/api/admin/users/${u.id}/ban`, { method: 'POST', body: { reason } }), 'Account banned');
       }
       if (a === 'unban') run(() => api(`/api/admin/users/${u.id}/unban`, { method: 'POST', body: {} }), 'Account unbanned');
+      if (a === 'mod') {
+        if (!confirm(`Make ${u.name} a moderator?\n\nModerators see the admin panel and can send warnings, remove listings and edit card prices. They can’t ban or delete accounts.`)) return;
+        run(() => api(`/api/admin/users/${u.id}/role`, { method: 'POST', body: { role: 'mod' } }), `${u.name} is now a moderator`);
+      }
+      if (a === 'unmod') run(() => api(`/api/admin/users/${u.id}/role`, { method: 'POST', body: { role: null } }), `${u.name} is no longer a moderator`);
       if (a === 'avatar') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { avatar: true } }), 'Profile picture removed');
       if (a === 'bio') run(() => api(`/api/admin/users/${u.id}/clear`, { method: 'POST', body: { bio: true } }), 'Description cleared');
       if (a === 'delete') {

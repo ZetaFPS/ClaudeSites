@@ -1,6 +1,8 @@
 'use strict';
-// Admin panel API (/api/admin/*). Only accounts listed in ADMIN_EMAILS can use it; everyone else
-// gets a 404 so the panel's existence isn't advertised.
+// Admin panel API (/api/admin/*). Admins (ADMIN_EMAILS) and moderators (given by an admin) can use
+// it; everyone else gets a 404 so the panel's existence isn't advertised. Moderators can warn,
+// remove listings and edit card prices; banning, deleting accounts, clearing profile content and
+// making moderators are admin-only, and moderators don't see email addresses.
 //
 //   • Warnings are saved (with which admin sent them) and delivered to the user's read-only
 //     "PokéFolio Admin" conversation in Messages, signed "Admin" — never with the admin's name.
@@ -10,7 +12,7 @@
 //     it owns (groups with other members are handed to the longest-standing member instead).
 //   • Admins can't ban or delete themselves or other admins.
 const crypto = require('crypto');
-const { avatarUrl, isAdmin } = require('./auth');
+const { avatarUrl, isAdmin, isMod, isStaff } = require('./auth');
 
 const REASONS = {
   listing: 'Inappropriate listing',
@@ -29,9 +31,10 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
   const words = (q) => String(q || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6).map((w) => w.slice(0, 60));
   const offsetOf = (url) => Math.min(100000, Math.max(0, parseInt(url.searchParams.get('offset'), 10) || 0));
 
-  const userRow = (u) => ({
-    id: u.id, name: u.name, username: u.username || null, email: u.email, avatar: avatarUrl(u.id, u.avatarAt), bio: u.bio || '',
-    createdAt: u.createdAt, bannedAt: u.bannedAt || null, banReason: u.banReason || null, admin: isAdmin(u),
+  // Moderators don't see email addresses.
+  const userRow = (u, viewer) => ({
+    id: u.id, name: u.name, username: u.username || null, email: isAdmin(viewer) ? u.email : null, avatar: avatarUrl(u.id, u.avatarAt), bio: u.bio || '',
+    createdAt: u.createdAt, bannedAt: u.bannedAt || null, banReason: u.banReason || null, admin: isAdmin(u), mod: isMod(u),
     productCount: u.productCount, warningCount: u.warningCount,
   });
   const productRow = (p) => ({
@@ -71,7 +74,9 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
     const parts = url.pathname.split('/').filter(Boolean); // api, admin, …
     if (parts[1] !== 'admin') return false;
     const me = await requireUser(req).catch(() => null);
-    if (!isAdmin(me)) throw httpError(404, 'Not found.');
+    if (!isStaff(me)) throw httpError(404, 'Not found.');
+    // Admin-only actions: banning, deleting accounts, clearing profile content, changing roles.
+    const adminOnly = () => { if (!isAdmin(me)) throw httpError(403, 'Only admins can do that.'); };
     const method = req.method;
     const [, , section, id, action] = parts;
 
@@ -81,7 +86,7 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
       const names = new Map();
       for (const w of recent.slice(0, 15)) if (!names.has(w.userId)) names.set(w.userId, await store.getUser(w.userId));
       send(res, 200, {
-        counts: { ...counts, online: live.online() }, reasons: REASONS,
+        counts: { ...counts, online: live.online() }, reasons: REASONS, role: isAdmin(me) ? 'admin' : 'mod',
         recentWarnings: recent.slice(0, 15).map((w) => ({ ...w, user: names.get(w.userId) ? { id: w.userId, name: names.get(w.userId).name, username: names.get(w.userId).username } : null })),
       });
       return true;
@@ -111,22 +116,30 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
         send(res, 200, { ok: true });
         return true;
       }
+      // PUT { variants: { holofoil: { 'PSA 10': 9500, … }, reverseHolofoil: {…}, '': {…} }, note }
+      // (or the older { prices } = any printing). Printings left empty are not saved.
       if (method === 'PUT') {
         const body = await readBody(req);
-        const clean = {};
-        for (const g of prices.MANUAL_GRADES) {
-          const raw = body.prices?.[g];
-          if (raw === '' || raw == null) continue;
-          const n = Math.round(Number(raw) * 100) / 100;
-          if (!Number.isFinite(n) || n < 0 || n > 1e8) throw httpError(400, `Enter a valid price for ${g}.`);
-          clean[g] = n;
+        const input = body.variants && typeof body.variants === 'object' ? body.variants : { '': body.prices };
+        const variants = {};
+        for (const [vk, vp] of Object.entries(input).slice(0, 12)) {
+          if (!/^[A-Za-z0-9]{0,40}$/.test(vk) || !vp || typeof vp !== 'object') continue;
+          const clean = {};
+          for (const g of prices.MANUAL_GRADES) {
+            const raw = vp[g];
+            if (raw === '' || raw == null) continue;
+            const n = Math.round(Number(raw) * 100) / 100;
+            if (!Number.isFinite(n) || n < 0 || n > 1e8) throw httpError(400, `Enter a valid price for ${g}.`);
+            clean[g] = n;
+          }
+          if (Object.keys(clean).length) variants[vk] = clean;
         }
-        if (!Object.keys(clean).length) throw httpError(400, 'Enter at least one price.');
+        if (!Object.keys(variants).length) throw httpError(400, 'Enter at least one price.');
         const card = await prices.getCard(cardId).catch(() => null);
         if (!card) throw httpError(404, 'Couldn’t find that card.');
         const entry = await prices.setManualPrices(cardId, {
-          prices: clean, note: String(body.note || '').trim().slice(0, 300), by: me.id,
-          card: { name: card.name, set: card.set?.name || '', number: card.number || '', image: card.images?.small || null, lang: card.lang || 'en' },
+          variants, note: String(body.note || '').trim().slice(0, 300), by: me.id,
+          card: { name: card.name, set: card.set?.name || '', number: card.number || '', image: card.images?.small || null, lang: card.lang || 'en', variants: prices.cardVariants(card) },
         });
         send(res, 200, { entry: { id: cardId, ...entry } });
         return true;
@@ -137,20 +150,22 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
       // GET /api/admin/users?q=&offset=
       if (!id && method === 'GET') {
         const offset = offsetOf(url);
-        const { items, total } = await store.listUsers({ words: words(url.searchParams.get('q')), offset, limit: PAGE });
-        send(res, 200, { total, offset, more: offset + items.length < total, items: items.map(userRow) });
+        // Moderators can't search by email either (they can't see emails).
+        const { items, total } = await store.listUsers({ words: words(url.searchParams.get('q')), offset, limit: PAGE, byEmail: isAdmin(me) });
+        send(res, 200, { total, offset, more: offset + items.length < total, items: items.map((u) => userRow(u, me)) });
         return true;
       }
       // GET /api/admin/users/:id
       if (id && !action && method === 'GET') {
         const u = await target(id, me);
         const [products, warnings] = await Promise.all([store.listProducts(u.id), store.listWarnings(u.id)]);
-        send(res, 200, { user: userRow(u), products: products.map(productRow), warnings });
+        send(res, 200, { user: userRow(u, me), products: products.map(productRow), warnings });
         return true;
       }
       // POST /api/admin/users/:id/warn { reason, message }
       if (action === 'warn' && method === 'POST') {
         const u = await target(id, me);
+        if (!isAdmin(me) && isStaff(u)) throw httpError(403, 'Moderators can’t warn admins or other moderators.');
         const { reason, message } = await readBody(req);
         await warn(me, u, reason, message);
         send(res, 200, { ok: true });
@@ -158,6 +173,7 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
       }
       // POST /api/admin/users/:id/ban { reason } · POST /api/admin/users/:id/unban
       if ((action === 'ban' || action === 'unban') && method === 'POST') {
+        adminOnly();
         const u = await target(id, me, { protect: action === 'ban' });
         if (action === 'ban') {
           const reason = String((await readBody(req)).reason || '').trim().slice(0, 200) || null;
@@ -168,21 +184,34 @@ function createAdminApi({ store, leaderboard, httpError, readBody, send, require
           await store.updateUser(u.id, { bannedAt: null, banReason: null });
         }
         leaderboard.invalidate();
-        send(res, 200, { user: userRow(await store.getUser(u.id)) });
+        send(res, 200, { user: userRow(await store.getUser(u.id), me) });
         return true;
       }
       // POST /api/admin/users/:id/clear { avatar?: true, bio?: true } — remove offending profile content
       if (action === 'clear' && method === 'POST') {
+        adminOnly();
         const u = await target(id, me);
         const body = await readBody(req);
         if (body.avatar) await store.setAvatar(u.id, null);
         if (body.bio) await store.updateUser(u.id, { bio: '' });
         leaderboard.invalidate();
-        send(res, 200, { user: userRow(await store.getUser(u.id)) });
+        send(res, 200, { user: userRow(await store.getUser(u.id), me) });
+        return true;
+      }
+      // POST /api/admin/users/:id/role { role: 'mod' | null } — admins make or remove moderators
+      if (action === 'role' && method === 'POST') {
+        adminOnly();
+        const u = await target(id, me);
+        if (isAdmin(u)) throw httpError(400, 'Admins are set with ADMIN_EMAILS, not here.');
+        const role = (await readBody(req)).role === 'mod' ? 'mod' : null;
+        await store.updateUser(u.id, { role });
+        live.send(u.id, 'account', {});
+        send(res, 200, { user: userRow(await store.getUser(u.id), me) });
         return true;
       }
       // DELETE /api/admin/users/:id
       if (id && !action && method === 'DELETE') {
+        adminOnly();
         const u = await target(id, me, { protect: true });
         await handOverGroups(u.id);
         live.kick(u.id, 'banned', { deleted: true });

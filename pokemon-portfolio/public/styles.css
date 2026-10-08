@@ -1428,3 +1428,7 @@ select::-ms-expand { display: none; }
 .cp-saved { color: var(--up) !important; white-space: normal !important; }
 .adm-thumb.card { width: 44px; height: 61px; border-radius: 5px; }
 .cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.tag.mod { color: #05060b; background: var(--cyan); }
+.cp-variant { border-radius: 16px; padding: 12px 14px 14px; margin: 0; border: 1px solid var(--edge); display: grid; gap: 10px; }
+.cp-variant legend { padding: 0 6px; font-weight: 700; font-size: 13.5px; color: var(--cyan); }
+.cp-row .muted { font-size: 11.5px; }
