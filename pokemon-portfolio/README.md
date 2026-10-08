@@ -161,7 +161,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   shows its share of the cost and its own P/L, and the purchase shows Paid vs. cards' value and its
   overall P/L. Every purchase counts in full towards your cost basis — even before any cards are
   assigned — so pulls that turned out worthless still weigh on your P/L. Deleting a purchase keeps
-  its cards. Purchases sync with your account.
+  its cards. Purchases sync with your account. **Total P/L** only compares cards that have a cost
+  (a paid price, or part of a purchase) with what you paid — cards with no cost recorded still count
+  in your portfolio value, but not as profit.
 - **Live updates** — while the app is open it keeps a live connection (Server-Sent Events,
   `GET /api/events`) to the server. New messages pop up in the corner (tap to open the chat), the
   Messages/Friends badges and the browser tab's `(n)` count update instantly, friend requests pop

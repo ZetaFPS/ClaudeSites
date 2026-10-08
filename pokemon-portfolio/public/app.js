@@ -421,6 +421,8 @@
     return (item.purchasePrice || 0) * item.qty;
   }
   const hasCost = (item) => !!lotById(item.lotId) || !!item.purchasePrice;
+  // A card's P/L; cards with no cost recorded have none and sort last.
+  const itemGain = (item) => (hasCost(item) ? itemValue(item) - itemCost(item) : -1e12);
   function lotStats(lot) {
     const its = lotItems(lot);
     const value = its.reduce((n, i) => n + itemValue(i), 0);
@@ -428,15 +430,19 @@
     return { its, value, count, cost: lot.price || 0, gain: value - (lot.price || 0) };
   }
   function totals() {
-    let value = 0, cost = 0, count = 0;
+    // basis = current value of the cards that have a cost (a paid price, or part of a purchase), so
+    // P/L = basis − cost; cards with no cost recorded don't count as profit.
+    let value = 0, cost = 0, count = 0, basis = 0;
     for (const it of state.items) {
-      value += itemValue(it);
+      const v = itemValue(it);
+      value += v;
+      if (hasCost(it)) basis += v;
       if (!lotById(it.lotId)) cost += itemCost(it);
       count += it.qty;
     }
     // Every purchase counts in full, even before cards are assigned to it.
     for (const lot of lots()) cost += lot.price || 0;
-    return { value, cost, count };
+    return { value, cost, count, basis, gain: basis - cost };
   }
   function recordSnapshot() {
     state.history[dayKey()] = Math.round(totals().value * 100) / 100;
@@ -805,11 +811,10 @@
   const resetAnimatedValues = () => ['#totalValue', '#statCards', '#statCost', '#statGain'].forEach((s) => { $(s)._val = null; });
 
   function renderPortfolio() {
-    const { value, cost, count } = totals();
+    const { value, cost, count, gain } = totals();
     animateValue($('#totalValue'), value, money);
     animateValue($('#statCards'), count, (n) => String(Math.round(n)));
     animateValue($('#statCost'), cost, money);
-    const gain = value - cost;
     const statGain = $('#statGain');
     statGain.className = 'stat-value num ' + (cost ? (gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat') : '');
     if (cost) animateValue(statGain, gain, signed);
@@ -849,14 +854,14 @@
     svg.innerHTML = '';
 
     const changeEl = $('#totalChange');
-    const { value, cost } = totals();
+    const { value, cost, gain } = totals();
     if (pts.length >= 2) {
       const start = pts[0][1], d = value - start;
       const label = { 7: 'past week', 30: 'past month', 90: 'past 3 months', 365: 'past year', 0: 'all time' }[chartRange];
       changeEl.className = 'hero-change num ' + (d > 0 ? 'up' : d < 0 ? 'down' : 'flat');
       changeEl.textContent = `${d >= 0 ? '▲' : '▼'} ${signed(d)} (${start ? pct(d / start) : '—'}) ${label}`;
     } else if (cost) {
-      const d = value - cost;
+      const d = gain;
       changeEl.className = 'hero-change num ' + (d > 0 ? 'up' : d < 0 ? 'down' : 'flat');
       changeEl.textContent = `${d >= 0 ? '▲' : '▼'} ${signed(d)} (${pct(d / cost)}) vs. cost`;
     } else {
@@ -1002,7 +1007,7 @@
       recent: (a, b) => b.addedAt - a.addedAt,
       name: (a, b) => a.card.name.localeCompare(b.card.name),
       set: (a, b) => (b.card.set?.releaseDate || '').localeCompare(a.card.set?.releaseDate || '') || a.card.number.localeCompare(b.card.number, undefined, { numeric: true }),
-      gain: (a, b) => (itemValue(b) - itemCost(b)) - (itemValue(a) - itemCost(a)),
+      gain: (a, b) => itemGain(b) - itemGain(a),
       // Most to gain from grading first (PSA 10 value minus raw value); unknown last.
       psa: (a, b) => {
         const pa = psaPotential(a), pb = psaPotential(b);
