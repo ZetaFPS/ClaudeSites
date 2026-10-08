@@ -1846,7 +1846,7 @@
       ? (psaEst ? 'estimate — no recent PSA 10 sales' : `${(psa10 / base).toFixed(1)}× ungraded`)
       : (loading ? 'Fetching graded sales…' : 'No graded sales found');
     const psaSrc = $('#psaValue')?.closest('.ph')?.querySelector('.src');
-    if (psaSrc) psaSrc.textContent = psaEst ? 'Estimate' : graded?.source === 'PokéFolio' ? 'PokéFolio' : 'PriceCharting';
+    if (psaSrc) psaSrc.textContent = !graded || psa10 == null ? '' : psaEst ? 'Estimate' : graded.source === 'PokéFolio' ? 'PokéFolio' : 'PriceCharting';
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
   }
@@ -1882,16 +1882,17 @@
       </div>
       ${others.length ? `<div class="ladder-other">${others.map((k) => `<div class="mini glass"><div class="k">${esc(k)}</div><div class="v">${money(p[k])}</div></div>`).join('')}</div>` : ''}
       ${gradedError ? '<p class="warn">⚠ PriceCharting couldn’t be reached just now, so these are estimates. Real graded sales will show again once it’s back.</p>' : ''}
-      ${graded.source === 'PokéFolio' ? `<p class="db-note"><b>PokéFolio</b> · ${graded.origin === 'manual'
-    ? `graded prices added by PokéFolio ${esc(timeAgo(graded.savedAt))}${graded.note ? ` — ${esc(graded.note)}` : ''}`
-    : `last graded prices saved from PriceCharting ${esc(timeAgo(graded.savedAt))}`}. Live PriceCharting prices replace these as soon as they’re available.</p>` : ''}
+      ${graded.source === 'PokéFolio' ? `<p class="db-note"><b>PokéFolio</b> · graded prices ${graded.origin === 'manual' ? 'added' : 'saved'} by PokéFolio ${esc(timeAgo(graded.savedAt))}${graded.note ? ` — ${esc(graded.note)}` : ''}.</p>` : ''}
       ${(graded.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
       ${est.size ? `<p class="est-note"><b>≈ Estimated:</b> ${[...est].map(gradeLabel).join(', ')} ${est.size === 1 ? 'has' : 'have'} no recent graded sales, so ${est.size === 1 ? 'it’s' : 'they’re'} estimated ${graded.estimateBasis === 'graded' ? 'from this card’s real graded sales' : 'from its raw price'} using typical PSA premiums. Treat as a rough guide.</p>` : ''}
-      <p class="note">${graded.source === 'Estimate' || graded.origin === 'manual'
-        ? `${graded.source === 'Estimate' ? 'No graded sales were found on PriceCharting for this card. ' : ''}<a href="${esc(graded.url)}" target="_blank" rel="noopener">Search PriceCharting ↗</a>`
-        : `Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.`}
-      Real values are recent sold listings. Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
-      Grades 9 and below are PriceCharting's “Grade N” averages, made up mostly of PSA sales; 9.5 is mostly BGS/CGC.</p>`;
+      ${graded.source === 'PokéFolio'
+    // Prices from PokéFolio's own database: PriceCharting isn't named, since it didn't supply them.
+    ? '<p class="note">Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that’s normal.</p>'
+    : `<p class="note">${graded.source === 'Estimate'
+      ? `${gradedError ? '' : 'No graded sales were found on PriceCharting for this card. '}<a href="${esc(graded.url)}" target="_blank" rel="noopener">Search PriceCharting ↗</a>`
+      : `Matched to <a href="${esc(graded.url)}" target="_blank" rel="noopener">${esc(graded.title || 'PriceCharting product')} ↗</a> — tap to check it's your card.`}
+      ${graded.source === 'Estimate' ? '' : 'Real values are recent sold listings. '}Low grades (PSA 1–6) usually sell for less than a near-mint raw copy; that's normal.
+      ${graded.source === 'Estimate' ? '' : 'Grades 9 and below are PriceCharting’s “Grade N” averages, made up mostly of PSA sales; 9.5 is mostly BGS/CGC.'}</p>`}`;
   }
 
   async function loadCardPrices() {
@@ -1966,7 +1967,7 @@
         ${owned && !isOwned ? `<div class="chip qty" style="margin-top:8px">In your vault ×${owned}</div>` : ''}
         <div class="price-hero">
           <div class="ph raw glass"><div class="ph-label">Raw · ungraded</div><div class="ph-value num" id="rawValue"></div><div class="ph-foot" id="rawFoot"></div><span class="src" id="rawSrc"></span></div>
-          <div class="ph psa glass"><div class="ph-label">PSA 10</div><div class="ph-value num" id="psaValue"></div><div class="ph-foot" id="psaFoot"></div><span class="src">PriceCharting</span></div>
+          <div class="ph psa glass"><div class="ph-label">PSA 10</div><div class="ph-value num" id="psaValue"></div><div class="ph-foot" id="psaFoot"></div><span class="src"></span></div>
         </div>
       </div>
 

@@ -59,7 +59,7 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   (plus a source note). These go into the same fallback database: they never replace live
   PriceCharting prices, and are used only when PriceCharting has no live result for that card (the
   newer of an admin price and a saved PriceCharting copy wins). Cards then label their graded
-  prices **PokéFolio**, with when they were added; grades left empty are estimated from
+  prices **PokéFolio** (PriceCharting is only named when it supplied the prices live), with when they were added; grades left empty are estimated from
   the ones entered.
 - **Profile pictures** — tap your avatar → **Add a profile picture**. Photos are cropped to a square
   and shrunk on your device before upload, stored in the database, and shown in the top bar, on
