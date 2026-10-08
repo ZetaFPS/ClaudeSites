@@ -13,7 +13,7 @@ const { createSocialApi } = require('./lib/social');
 const { createAdminApi } = require('./lib/admin');
 const { createLive } = require('./lib/live');
 const { createVisualIndex, liteCard } = require('./lib/visualIndex');
-const { createCatalog } = require('./lib/catalog');
+const { createCatalog, liteCard: catalogCard } = require('./lib/catalog');
 const { createPacks } = require('./lib/packs');
 const CardDescriptor = require('./public/descriptor');
 
@@ -106,6 +106,37 @@ async function requireUser(req) {
   const user = await auth.userForToken(cookies(req)[COOKIE]);
   if (!user) throw httpError(401, 'Please sign in.');
   return user;
+}
+
+// Catalogue cards from the last ~18 months that match every word of the search (name, card number
+// — including letter numbers like "R" — set name or rarity), newest first, not already in the results.
+const RECENT_MS = 548 * 864e5;
+const searchWords = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+function recentCatalogMatches(parsed, have) {
+  const list = catalog?.peek('en');
+  if (!list?.length) return [];
+  const words = searchWords(parsed.name);
+  const num = parsed.number ? String(parsed.number).toLowerCase().replace(/^0+(?=\w)/, '') : null;
+  if (!words.length && !num) return [];
+  const seen = new Set(have.map((c) => `${searchWords(c.name).join(' ')}|${String(c.number || '').toLowerCase().replace(/^0+(?=\w)/, '')}|${searchWords(c.set?.name).join(' ')}`));
+  const ids = new Set(have.map((c) => c.id));
+  const since = new Date(Date.now() - RECENT_MS).toISOString().slice(0, 10);
+  const out = [];
+  for (const c of list) {
+    if ((c.released || '') < since) continue;
+    const cardNum = String(c.number || '').toLowerCase().replace(/^0+(?=\w)/, '');
+    if (num && cardNum !== num) continue;
+    if (parsed.total && c.total && +c.total !== +parsed.total) continue;
+    const nameWords = searchWords(c.name);
+    const hay = new Set([...nameWords, cardNum, ...searchWords(c.setName), ...searchWords(c.rarity)]);
+    if (!words.every((w) => hay.has(w) || nameWords.some((n) => n.startsWith(w)))) continue;
+    const key = `${nameWords.join(' ')}|${cardNum}|${searchWords(c.setName).join(' ')}`;
+    if (ids.has(c.id) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(catalogCard(c));
+    if (out.length >= 24) break;
+  }
+  return out;
 }
 
 /* ---------------- routes ---------------- */
@@ -263,7 +294,14 @@ async function api(req, res, url) {
       lang: p.get('lang') === 'ja' ? 'ja' : null,
     };
     if (!parsed.name && !parsed.number) throw httpError(400, 'Enter a card name or number.');
-    return send(res, 200, await prices.search(parsed));
+    const out = await prices.search(parsed);
+    // Brand-new sets (e.g. 30th Celebration, with letter-numbered cards like the R/G/B Mews) can be
+    // missing from the search sources' results: add matching recent cards from the catalogue.
+    if (!parsed.lang) {
+      const extra = recentCatalogMatches(parsed, out.data);
+      if (extra.length) out.data = [...extra, ...out.data];
+    }
+    return send(res, 200, out);
   }
 
   // --- raw prices for many cards (portfolio refresh / search results) ---
@@ -586,6 +624,7 @@ async function start() {
   socialApi = createSocialApi({ store, leaderboard, prices, httpError, readBody, send, requireUser, optionalUser, rateLimit, live, isAdmin });
   adminApi = createAdminApi({ store, leaderboard, httpError, readBody, send, requireUser, groupsApi, live, prices });
   catalog = createCatalog({ store });
+  catalog.peek('en'); // start loading the card catalogue now (search uses it for brand-new sets)
   packs = createPacks({ catalog });
   visualIndex = createVisualIndex({
     store, catalog,
