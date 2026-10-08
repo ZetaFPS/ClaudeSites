@@ -1849,6 +1849,20 @@
     if (psaSrc) psaSrc.textContent = !graded || psa10 == null ? '' : psaEst ? 'Estimate' : graded.source === 'PokéFolio' ? 'PokéFolio' : 'PriceCharting';
     $$('#variantSeg button').forEach((b) => b.classList.toggle('active', b.dataset.v === variant));
     $$('#priceTable tbody tr').forEach((row) => row.classList.toggle('sel', row.dataset.v === variant));
+    showPrinting(variant);
+  }
+  // The card sources have one photo per card (no separate reverse holo scans), so the chosen
+  // printing's foil is drawn over it: holo = foil on the artwork (the whole card for full-art
+  // cards), reverse holo = foil everywhere except the artwork, normal = no foil.
+  const FULL_ART = /illustration|ultra|secret|hyper|rainbow|special|full art|shiny|gold|character|trainer gallery|radiant|amazing/i;
+  function showPrinting(variant) {
+    const holo = $('#holo');
+    if (!holo) return;
+    holo.dataset.printing = /reverse/i.test(variant || '') ? 'reverse' : /holo/i.test(variant || '') ? 'holo' : 'none';
+    const tag = $('#printingTag');
+    const several = $$('#variantSeg button').length > 1;
+    tag.hidden = !several || !variant;
+    tag.textContent = VARIANT_LABELS[variant] || variant || '';
   }
 
   function renderGraded() {
@@ -1957,7 +1971,7 @@
 
     $('#sheetBody').innerHTML = `
       <div class="detail-top">
-        <div class="holo" id="holo"><div class="holo-inner"><img ${imgAttrs(c, 'large')} alt="${esc(c.name)} card"><div class="holo-shine"></div></div></div>
+        <div class="holo" id="holo" ${FULL_ART.test(c.rarity || '') ? 'data-fullart' : ''}><div class="holo-inner"><img ${imgAttrs(c, 'large')} alt="${esc(c.name)} card"><div class="foil" aria-hidden="true"></div><div class="holo-shine"></div></div><span class="printing-tag" id="printingTag" hidden></span></div>
         <h2 class="detail-name" id="sheetTitle">${esc(c.name)}</h2>
         <div class="detail-set">
           ${set.images?.symbol ? `<img src="${esc(set.images.symbol)}" alt="">` : ''}
@@ -2097,6 +2111,8 @@
       shine.style.setProperty('--my', `${py * 100}%`);
       shine.style.setProperty('--bx', `${px * 100}%`);
       shine.style.setProperty('--by', `${py * 100}%`);
+      el.style.setProperty('--fx', `${px * 100}%`); // foil follows the pointer too
+      el.style.setProperty('--fy', `${py * 100}%`);
       el.classList.add('active');
     });
     el.addEventListener('pointerleave', () => { inner.style.transform = ''; el.classList.remove('active'); });

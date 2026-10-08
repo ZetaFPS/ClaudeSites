@@ -36,7 +36,10 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   4. Cardmarket (EU) trend price converted from € to $ at the ECB daily rate — marked "≈"
   5. TCGplayer's lowest current listing, as a last resort — marked "≈"
 
-  Unlimited printings are the default over 1st Edition. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
+  Unlimited printings are the default over 1st Edition. Switching printing on a card also changes
+  its picture: the card sources have one photo per card, so the printing's foil is drawn over it —
+  Holofoil shines on the artwork (the whole card for full-art cards), Reverse Holo on everything
+  except the artwork, Normal has none — and it follows the card's tilt. Card search falls back to TCGdex when the Pokémon TCG API is slow or down.
 - **Graded values** on every card: PSA 10, Grade 9.5, PSA 9 … 1, plus BGS/CGC/SGC 10 where
   available, each with its multiple of the raw price — from [PriceCharting](https://www.pricecharting.com).
   If a match can't be made on set name (common for promos), a product that is the *only* one with

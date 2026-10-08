@@ -1432,3 +1432,35 @@ select::-ms-expand { display: none; }
 .cp-variant { border-radius: 16px; padding: 12px 14px 14px; margin: 0; border: 1px solid var(--edge); display: grid; gap: 10px; }
 .cp-variant legend { padding: 0 6px; font-weight: 700; font-size: 13.5px; color: var(--cyan); }
 .cp-row .muted { font-size: 11.5px; }
+
+/* ---------- Printing foil (card view): holo / reverse holo drawn over the card photo ---------- */
+.foil {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .35s;
+  mix-blend-mode: color-dodge;
+  background:
+    repeating-linear-gradient(115deg, rgba(255, 0, 132, .55) 0%, rgba(252, 164, 0, .5) 6%, rgba(255, 255, 0, .45) 12%, rgba(0, 255, 138, .45) 18%, rgba(0, 207, 255, .55) 24%, rgba(204, 76, 250, .55) 30%, rgba(255, 0, 132, .55) 36%),
+    radial-gradient(circle, rgba(255, 255, 255, .35) 0 1px, transparent 1.5px);
+  background-size: 300% 300%, 5px 5px;
+  background-position: var(--fx, 35%) var(--fy, 35%), 0 0;
+  animation: foil-hue 9s linear infinite;
+}
+@keyframes foil-hue { to { filter: hue-rotate(360deg); } }
+/* Holo: the artwork window shines (whole card on full-art cards). */
+.holo[data-printing="holo"] .foil { opacity: .5; clip-path: inset(10.5% 8.5% 49.5% 8.5% round 3px); }
+.holo[data-printing="holo"][data-fullart] .foil { opacity: .42; clip-path: none; }
+/* Reverse holo: everything except the artwork window. */
+.holo[data-printing="reverse"] .foil {
+  /* Reverse holo foil sits on the card's light frame and text box, where colour-dodge washes out. */
+  opacity: .38; mix-blend-mode: hard-light;
+  clip-path: polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, 8.5% 10.5%, 91.5% 10.5%, 91.5% 50.5%, 8.5% 50.5%, 8.5% 10.5%);
+}
+.holo.active .foil { transition: opacity .2s; }
+.printing-tag {
+  position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); z-index: 2; white-space: nowrap;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 10px; border-radius: 999px;
+  background: rgba(5, 6, 11, .85); border: 1px solid var(--edge-2); color: var(--text);
+}
+.holo[data-printing="reverse"] .printing-tag, .holo[data-printing="holo"] .printing-tag {
+  border-color: transparent; background: linear-gradient(rgba(5, 6, 11, .9), rgba(5, 6, 11, .9)) padding-box, var(--grad) border-box; border: 1px solid transparent;
+}
+@media (prefers-reduced-motion: reduce) { .foil { animation: none; } }
