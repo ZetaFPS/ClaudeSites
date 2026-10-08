@@ -27,6 +27,11 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   only if none has it.
 - **Search** by name, optionally with a number: `Charizard`, `Pikachu 58/102`, `Pikachu SWSH020`.
 - **Raw prices drive your portfolio total.** Each card's ungraded market price comes from, in order:
+  0. PriceCharting's "Ungraded" price — whenever PriceCharting is reachable and has a live price for
+     the card. An open card uses it straight away; collection refreshes use it once the card has been
+     looked up (in the last 12 hours — a few lookups run in the background for the next refresh). If
+     PriceCharting is blocked or failing, prices go back to TCGplayer straight away (saved copies of
+     PriceCharting prices are never used for raw prices).
   1. TCGplayer market price for the chosen printing (via the Pokémon TCG API)
   2. TCGplayer market price via [TCGdex](https://tcgdex.dev) for the same card (same set, number and printing)
      — or, for brand-new sets TCGdex hasn't priced or pictured yet, straight from TCGplayer's public

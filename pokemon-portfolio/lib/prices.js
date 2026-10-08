@@ -658,13 +658,36 @@ async function flushSavedPrices() {
   await pcSaved.store.setKv(PC_SAVED_KEY, Object.fromEntries(pcSaved.map)).catch(() => {});
 }
 
+const pcKey = (info) => `pc2:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
+// Live PriceCharting answers from the last 12 hours (null = looked up, no match). Lets raw prices
+// prefer PriceCharting without waiting on a lookup for every card in a big collection.
+const pcLive = new Map(); // key -> { value, at }
+// "Connected": not paused, and PriceCharting's last answer was a success (not an error/block).
+const pcReachable = () => Date.now() >= pcState.blockedUntil && pcState.lastOkAt >= pcState.lastErrorAt;
+function pcPeek(info) {
+  if (!pcReachable()) return null;
+  const hit = info.name && info.number ? pcLive.get(pcKey(info)) : null;
+  return hit && Date.now() - hit.at < 12 * HOUR ? hit : null;
+}
+// Look cards up in the background (a few at a time) so the next refresh can use PriceCharting.
+const pcWarming = new Set();
+function pcWarm(info) {
+  if (!info.name || !info.number || pcWarming.size >= 40 || Date.now() < pcState.blockedUntil) return;
+  const key = pcKey(info);
+  if (pcWarming.has(key)) return;
+  pcWarming.add(key);
+  priceCharting(info).catch(() => {}).finally(() => pcWarming.delete(key));
+}
+
 function priceCharting(info) {
   if (!info.name || !info.number) return Promise.resolve(null);
-  const key = `pc2:${info.japanese ? 'ja:' : ''}${slug(info.name)}:${slug(info.setName)}:${normNum(info.number)}:${isReverse(info.variant) ? 'rev' : ''}${is1st(info.variant) ? '1st' : ''}`;
+  const key = pcKey(info);
   return cached(key, 12 * HOUR, async () => {
     try {
       const r = await (process.env.PRICECHARTING_TOKEN ? pcViaApi(info) : pcViaPage(info));
       if (r) savePc(key, r);
+      pcLive.set(key, { value: r, at: Date.now() });
+      if (pcLive.size > 20000) pcLive.delete(pcLive.keys().next().value);
       return r;
     } catch (e) {
       const saved = pcSaved.map.get(key);
@@ -812,22 +835,30 @@ async function priceInfo(card, variant) {
 }
 
 // Raw (ungraded, near-mint) price in USD for one printing, from the first source that has one:
+//   0. PriceCharting "Ungraded", when PriceCharting is reachable and has a live price for this card
+//      (looked up in the last 12 hours; otherwise a background lookup is started for next time)
 //   1. TCGplayer market price (Pokémon TCG API)       — recent sales
 //   2. TCGplayer market price (TCGdex)                 — recent sales
-//   3. PriceCharting "Ungraded"                        — recent eBay sales
+//   3. PriceCharting "Ungraded" (live lookup now)      — recent eBay sales
 //   4. Cardmarket trend price, € converted to $        — recent European sales
 //   5. TCGplayer lowest current listing                — asking price (last resort)
-// Sources 4–5 are marked `approx` so the app can say so.
+// Sources 4–5 are marked `approx` so the app can say so. Saved (stale) PriceCharting copies are
+// never used for raw prices — only answers from PriceCharting itself.
 async function rawPrice(id, variant) {
   const card = await getCard(id);
   const info = await priceInfo(card, variant);
+  const live = pcPeek(info);
+  if (live?.value?.prices?.Ungraded != null) {
+    return { price: live.value.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: live.at };
+  }
+  if (!live) pcWarm(info);
   const tp = tcgplayerPrice(card, info.variant);
   if (tp) return { price: tp.price, source: 'TCGplayer', variant: tp.variant, updatedAt: card.tcgplayer?.updatedAt || null };
   const dex = id.startsWith('tcgdex') ? null : await tcgdexMatch(info).catch(() => null);
   const dp = dex && tcgplayerPrice(dex, info.variant);
   if (dp) return { price: dp.price, source: 'TCGplayer', variant: dp.variant, updatedAt: dex.tcgplayer?.updatedAt || null };
   const pc = await priceCharting(info).catch(() => null);
-  if (pc?.prices?.Ungraded != null) return { price: pc.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: null };
+  if (pc?.prices?.Ungraded != null && !pc.staleSince) return { price: pc.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: null };
   const eur = cardmarketEur(card, info.variant) ?? cardmarketEur(dex, info.variant);
   if (eur != null) {
     const fx = await eurToUsd();
@@ -846,10 +877,17 @@ async function rawPrice(id, variant) {
 async function fullPrices(id, variant) {
   const card = await getCard(id);
   const info = await priceInfo(card, variant);
-  const [raw, pc] = await Promise.all([
+  const [rawFirst, pc] = await Promise.all([
     rawPrice(id, info.variant),
     priceCharting(info).catch((e) => ({ error: e.message })),
   ]);
+  // A live PriceCharting answer (not a saved copy) sets the raw price; otherwise TCGplayer & co.
+  const pcLiveNow = pc && !pc.error && !pc.staleSince;
+  let raw = pcLiveNow && pc.prices?.Ungraded != null
+    ? { price: pc.prices.Ungraded, source: 'PriceCharting', variant: info.variant, updatedAt: Date.now() }
+    : rawFirst;
+  // PriceCharting just failed: don't keep an earlier PriceCharting raw price — use TCGplayer & co.
+  if (!pcLiveNow && raw.source === 'PriceCharting') raw = await rawPrice(id, info.variant);
   let graded = null;
   if (pc && !pc.error) {
     const warnings = [];
