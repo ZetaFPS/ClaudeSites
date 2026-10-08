@@ -153,6 +153,15 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   (1W, 1M, 3M, 1Y, or ALL = since it was added); hover for the % and start date. Each card's price
   is recorded whenever prices refresh (a point only when it changes, ≤160 per card) and syncs with
   your account, so the change appears once a card's price has moved since it was first recorded.
+- **Purchases (packs, ETBs, boxes, bundles)** — besides a per-card "paid" price, record what you
+  bought sealed: give it a name (`Base Set ETB`), a type (booster pack, booster box, Elite Trainer
+  Box, booster bundle, collection box, tin, blister, bulk lot, other), the price paid, a date and a
+  note, then tick the cards that came out of it (Portfolio → **Purchases** tab, or **Bought as** on a
+  card's form). The purchase price is shared across its cards by their current value, so each card
+  shows its share of the cost and its own P/L, and the purchase shows Paid vs. cards' value and its
+  overall P/L. Every purchase counts in full towards your cost basis — even before any cards are
+  assigned — so pulls that turned out worthless still weigh on your P/L. Deleting a purchase keeps
+  its cards. Purchases sync with your account.
 - **Live updates** — while the app is open it keeps a live connection (Server-Sent Events,
   `GET /api/events`) to the server. New messages pop up in the corner (tap to open the chat), the
   Messages/Friends badges and the browser tab's `(n)` count update instantly, friend requests pop

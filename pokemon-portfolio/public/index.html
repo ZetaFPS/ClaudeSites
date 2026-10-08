@@ -142,8 +142,19 @@
             </select>
           </div>
         </div>
+        <div class="seg coll-tabs" id="collTabs" role="tablist" aria-label="Collection view">
+          <button type="button" data-ct="cards" class="active" role="tab">Cards</button>
+          <button type="button" data-ct="lots" role="tab">Purchases <span class="ct-count" id="lotCount"></span></button>
+        </div>
         <p class="psa-note" id="psaNote" hidden></p>
         <div class="card-list" id="cardList"></div>
+        <div class="lot-pane" id="lotPane" hidden>
+          <div class="lot-head">
+            <p class="muted">Track sealed product you opened — an ETB, a booster box, packs, a bundle — then pick which of your cards came from it. Its price is shared across those cards by their value, so every card still shows a P/L.</p>
+            <button class="btn primary glow sm" id="newLotBtn">+ New purchase</button>
+          </div>
+          <div class="lot-list" id="lotList"></div>
+        </div>
         <div class="empty-state" id="emptyState" hidden>
           <div class="empty-art" aria-hidden="true"></div>
           <h3>Your vault is empty</h3>

@@ -282,7 +282,13 @@ async function api(req, res, url) {
           if (pts.length) cardHistory[k] = pts;
         }
       }
-      const doc = { items: body.items, history, cardHistory, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
+      // Purchases (ETBs, boxes, packs…) whose price is shared by the cards assigned to them.
+      const lots = (Array.isArray(body.lots) ? body.lots : []).slice(0, 1000).filter((l) => l && typeof l.id === 'string' && l.id.length <= 40).map((l) => ({
+        id: l.id, name: String(l.name || '').slice(0, 80), type: String(l.type || '').slice(0, 40),
+        price: Math.max(0, Math.min(1e8, Math.round((+l.price || 0) * 100) / 100)),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(l.date || '') ? l.date : '', note: String(l.note || '').slice(0, 300), createdAt: +l.createdAt || Date.now(),
+      }));
+      const doc = { items: body.items, lots, history, cardHistory, pricesUpdatedAt: +body.pricesUpdatedAt || 0, priceVersion: +body.priceVersion || 0, updatedAt: Date.now() };
       await store.putPortfolio(user.id, doc);
       leaderboard.markDirty();
       // Other open tabs/devices reload the collection (the sending tab recognises its own id).

@@ -53,7 +53,7 @@
 
   /* ================= Session & storage ================= */
   let user = null; // null = guest
-  const emptyState = () => ({ items: [], history: {}, cardHistory: {}, pricesUpdatedAt: 0, updatedAt: 0 });
+  const emptyState = () => ({ items: [], lots: [], history: {}, cardHistory: {}, pricesUpdatedAt: 0, updatedAt: 0 });
   let state = emptyState();
   const storeKey = () => (user ? `pokefolio.u.${user.id}` : GUEST_KEY);
 
@@ -78,7 +78,7 @@
   async function pushRemote() {
     if (!user) return;
     try {
-      await api('/api/portfolio', { method: 'PUT', headers: { 'X-Client-Id': TAB_ID }, body: { items: state.items, history: state.history, cardHistory: state.cardHistory || {}, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
+      await api('/api/portfolio', { method: 'PUT', headers: { 'X-Client-Id': TAB_ID }, body: { items: state.items, lots: state.lots || [], history: state.history, cardHistory: state.cardHistory || {}, pricesUpdatedAt: state.pricesUpdatedAt, priceVersion: state.priceVersion } });
       setSync('ok', 'Synced');
     } catch (e) {
       if (e.status === 401) return signedOut('Your session expired — please sign in again.');
@@ -394,10 +394,48 @@
     return knownRaw(item.card, item.variant)?.price ?? null;
   }
   function itemValue(item) { return (itemPrice(item) || 0) * item.qty; }
-  function itemCost(item) { return (item.purchasePrice || 0) * item.qty; }
+
+  /* ---------- Purchases (packs, boxes, ETBs, bundles…) ---------- */
+  // A purchase has a price; the cards assigned to it share that price in proportion to their current
+  // value (evenly if none has a value yet), so each card still has a cost and a P/L.
+  const LOT_TYPES = ['Booster pack', 'Booster box', 'Elite Trainer Box', 'Booster bundle', 'Collection box', 'Tin', 'Blister pack', 'Bulk lot', 'Other'];
+  const lots = () => (state.lots ||= []);
+  const lotById = (id) => (id ? lots().find((l) => l.id === id) || null : null);
+  const lotItems = (lot) => state.items.filter((i) => i.lotId === lot.id);
+  let shareCache = null;
+  function lotShares() {
+    if (shareCache) return shareCache;
+    shareCache = new Map();
+    for (const lot of lots()) {
+      const its = lotItems(lot);
+      const vals = its.map(itemValue);
+      const sum = vals.reduce((a, b) => a + b, 0);
+      its.forEach((it, k) => shareCache.set(it.uid, sum > 0 ? (lot.price || 0) * (vals[k] / sum) : (lot.price || 0) / its.length));
+    }
+    queueMicrotask(() => { shareCache = null; }); // recomputed after prices or assignments change
+    return shareCache;
+  }
+  // What a collection row cost: its share of its purchase, or the price paid per card × quantity.
+  function itemCost(item) {
+    if (lotById(item.lotId)) return lotShares().get(item.uid) || 0;
+    return (item.purchasePrice || 0) * item.qty;
+  }
+  const hasCost = (item) => !!lotById(item.lotId) || !!item.purchasePrice;
+  function lotStats(lot) {
+    const its = lotItems(lot);
+    const value = its.reduce((n, i) => n + itemValue(i), 0);
+    const count = its.reduce((n, i) => n + i.qty, 0);
+    return { its, value, count, cost: lot.price || 0, gain: value - (lot.price || 0) };
+  }
   function totals() {
     let value = 0, cost = 0, count = 0;
-    for (const it of state.items) { value += itemValue(it); cost += itemCost(it); count += it.qty; }
+    for (const it of state.items) {
+      value += itemValue(it);
+      if (!lotById(it.lotId)) cost += itemCost(it);
+      count += it.qty;
+    }
+    // Every purchase counts in full, even before cards are assigned to it.
+    for (const lot of lots()) cost += lot.price || 0;
     return { value, cost, count };
   }
   function recordSnapshot() {
@@ -477,6 +515,156 @@
     } finally {
       btn.classList.remove('spinning');
     }
+  }
+
+  /* ---------- Purchases view ---------- */
+  let collTab = 'cards';
+  $('#collTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ct]');
+    if (!b) return;
+    collTab = b.dataset.ct;
+    $$('#collTabs [data-ct]').forEach((x) => x.classList.toggle('active', x === b));
+    renderLots();
+  });
+  const pctOf = (gain, cost) => (cost > 0 ? ` (${gain >= 0 ? '+' : '−'}${Math.abs((gain / cost) * 100).toFixed(1)}%)` : '');
+  function renderLots() {
+    const showLots = collTab === 'lots';
+    $('#cardList').hidden = showLots;
+    $('.list-tools').style.visibility = showLots ? 'hidden' : '';
+    $('#lotPane').hidden = !showLots;
+    $('#lotCount').textContent = lots().length ? lots().length : '';
+    if (!showLots) return;
+    const list = [...lots()].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+    $('#lotList').innerHTML = list.length ? list.map((lot) => {
+      const st = lotStats(lot);
+      const cls = st.gain > 0 ? 'up' : st.gain < 0 ? 'down' : 'flat';
+      const pct = st.cost ? Math.min(100, (st.value / st.cost) * 100) : 0;
+      return `<button class="lot-row glass" data-lot="${esc(lot.id)}">
+        <span class="lot-ic" aria-hidden="true">📦</span>
+        <span class="lot-main">
+          <b>${esc(lot.name)}</b>
+          <small>${esc(lot.type || 'Purchase')}${lot.date ? ` · ${esc(new Date(lot.date + 'T00:00').toLocaleDateString())}` : ''} · ${st.count} card${st.count === 1 ? '' : 's'}</small>
+          <span class="lot-bar" title="Value recovered: ${pct.toFixed(0)}% of what you paid"><i class="${cls}" style="width:${pct}%"></i></span>
+        </span>
+        <span class="lot-nums">
+          <span class="num">${money(st.value)} <small>of ${money(st.cost)}</small></span>
+          <b class="num ${cls}">${signed(st.gain)}${pctOf(st.gain, st.cost)}</b>
+        </span>
+      </button>`;
+    }).join('') : '<div class="groups-none"><b>No purchases yet</b><span>Add the ETBs, boxes and packs you open, then assign the cards you pulled.</span></div>';
+  }
+  $('#lotList').addEventListener('click', (e) => { const b = e.target.closest('[data-lot]'); if (b) openLot(b.dataset.lot); });
+  $('#newLotBtn').addEventListener('click', () => openLot(null));
+
+  // Create or edit a purchase, and choose which cards came from it.
+  function openLot(id, { afterSave = null } = {}) {
+    const lot = lotById(id);
+    const today = new Date().toISOString().slice(0, 10);
+    const st = lot ? lotStats(lot) : null;
+    const shares = lotShares();
+    $('#sheetBody').innerHTML = `
+      <form class="lot-form" id="lotForm" novalidate>
+        <h3 id="sheetTitle">${lot ? esc(lot.name) : 'New purchase'}</h3>
+        ${st ? `<div class="lot-summary">
+          <div class="info glass"><div class="k">Paid</div><div class="v num">${money(st.cost)}</div></div>
+          <div class="info glass"><div class="k">Cards’ value</div><div class="v num">${money(st.value)}</div></div>
+          <div class="info glass"><div class="k">P/L</div><div class="v num ${st.gain > 0 ? 'up' : st.gain < 0 ? 'down' : ''}">${signed(st.gain)}${pctOf(st.gain, st.cost)}</div></div>
+        </div>` : ''}
+        <div class="form-row">
+          <div class="field"><label for="lotName">Name</label><input id="lotName" maxlength="80" placeholder="e.g. Surging Sparks ETB" value="${esc(lot?.name || '')}"></div>
+          <div class="field"><label for="lotType">Type</label><select id="lotType">${LOT_TYPES.map((t) => `<option ${t === (lot?.type || 'Elite Trainer Box') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label for="lotPrice">Price paid (USD)</label><input id="lotPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${lot ? (lot.price || 0).toFixed(2) : ''}"></div>
+          <div class="field"><label for="lotDate">Date</label><input id="lotDate" type="date" value="${esc(lot?.date || today)}" max="${today}"></div>
+        </div>
+        <div class="field"><label for="lotNote">Note (optional)</label><input id="lotNote" maxlength="300" placeholder="Where you bought it, what was inside…" value="${esc(lot?.note || '')}"></div>
+        <p class="auth-error" id="lotErr" role="alert" hidden></p>
+        ${lot ? `<h4 class="profile-sub">Cards from this purchase · ${st.count}</h4>
+          ${st.its.length ? `<div class="lot-cards">${st.its.map((it) => {
+    const share = shares.get(it.uid) || 0, g = itemValue(it) - share;
+    return `<div class="lot-card glass">
+              <img ${imgAttrs(it.card)} alt="" loading="lazy">
+              <span class="lot-main"><b>${esc(it.card.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</b><small>${esc(it.card.set?.name || '')} · value ${money(itemValue(it))} · cost share ${money(share)}</small></span>
+              <b class="num ${g > 0 ? 'up' : g < 0 ? 'down' : 'flat'}">${signed(g)}</b>
+              <button type="button" class="icon-btn sm" data-unassign="${esc(it.uid)}" aria-label="Remove ${esc(it.card.name)} from this purchase">×</button>
+            </div>`;
+  }).join('')}</div>` : '<p class="note">No cards yet — add the cards you pulled.</p>'}
+          <button type="button" class="btn block" id="lotAddCards">+ Add cards from your collection</button>` : ''}
+        <div class="listing-own">
+          ${lot ? '<button type="button" class="btn danger" id="lotDelete">Delete purchase</button>' : '<button type="button" class="btn ghost" id="lotCancel">Cancel</button>'}
+          <button class="btn primary glow">${lot ? 'Save' : 'Create & add cards'}</button>
+        </div>
+      </form>`;
+    openSheetShell();
+    $('#lotCancel')?.addEventListener('click', closeSheet);
+    $('#lotAddCards')?.addEventListener('click', () => pickLotCards(lot.id));
+    $$('[data-unassign]').forEach((b) => b.addEventListener('click', () => {
+      const it = state.items.find((i) => i.uid === b.dataset.unassign);
+      if (it) { delete it.lotId; recordSnapshot(); renderPortfolio(); openLot(lot.id); toast(`${it.card.name} is no longer in this purchase`); }
+    }));
+    $('#lotDelete')?.addEventListener('click', () => {
+      if (!confirm(`Delete “${lot.name}”?\n\nIts cards stay in your collection (they go back to their own price paid, if any).`)) return;
+      for (const it of state.items) if (it.lotId === lot.id) delete it.lotId;
+      state.lots = lots().filter((l) => l.id !== lot.id);
+      recordSnapshot(); renderPortfolio(); closeSheet(); toast('Purchase deleted');
+    });
+    $('#lotForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const err = $('#lotErr');
+      const name = $('#lotName').value.trim().slice(0, 80);
+      const price = Math.round(Math.max(0, +$('#lotPrice').value || 0) * 100) / 100;
+      if (!name) { err.textContent = 'Give the purchase a name, e.g. “Surging Sparks ETB”.'; err.hidden = false; return; }
+      const fields = { name, type: $('#lotType').value, price, date: $('#lotDate').value || today, note: $('#lotNote').value.trim().slice(0, 300) };
+      let saved = lot;
+      if (lot) Object.assign(lot, fields);
+      else { saved = { id: uid(), createdAt: Date.now(), ...fields }; lots().push(saved); }
+      recordSnapshot();
+      renderPortfolio();
+      toast(lot ? 'Purchase saved' : `Created “${name}”`);
+      if (afterSave) return afterSave(saved);
+      if (lot) closeSheet(); else pickLotCards(saved.id);
+    });
+  }
+
+  // Tick the cards that came from a purchase (moving a card from another purchase is allowed).
+  function pickLotCards(lotId) {
+    const lot = lotById(lotId);
+    if (!lot) return;
+    const picked = new Set(state.items.filter((i) => i.lotId === lotId).map((i) => i.uid));
+    const rows = [...state.items].sort((a, b) => (a.lotId === lotId ? -1 : 0) - (b.lotId === lotId ? -1 : 0) || b.addedAt - a.addedAt);
+    $('#sheetBody').innerHTML = `
+      <div class="lot-form">
+        <h3 id="sheetTitle">Cards from ${esc(lot.name)}</h3>
+        <p class="muted">Tick the cards you got from this purchase. A card can belong to one purchase; ticking one from another purchase moves it here.</p>
+        <input type="search" id="lotPickFilter" class="lot-filter" placeholder="Filter your cards…">
+        <div class="lot-pick" id="lotPick">${rows.map((it) => {
+    const other = it.lotId && it.lotId !== lotId ? lotById(it.lotId) : null;
+    return `<label class="lot-pick-row glass" data-text="${esc(`${it.card.name} ${it.card.set?.name || ''} ${it.card.number}`.toLowerCase())}">
+          <input type="checkbox" value="${esc(it.uid)}" ${picked.has(it.uid) ? 'checked' : ''}>
+          <img ${imgAttrs(it.card)} alt="" loading="lazy">
+          <span class="lot-main"><b>${esc(it.card.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</b><small>${esc(it.card.set?.name || '')} · #${esc(it.card.number)} · ${money(itemValue(it))}${other ? ` · in “${esc(other.name)}”` : it.purchasePrice ? ` · paid ${money(it.purchasePrice)} each` : ''}</small></span>
+        </label>`;
+  }).join('') || '<p class="note">Your collection is empty — add cards first.</p>'}</div>
+        <div class="listing-own"><button type="button" class="btn ghost" id="lotPickBack">Back</button><button type="button" class="btn primary glow" id="lotPickSave">Save cards</button></div>
+      </div>`;
+    openSheetShell();
+    $('#lotPickFilter').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      $$('#lotPick .lot-pick-row').forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q); });
+    });
+    $('#lotPickBack').addEventListener('click', () => openLot(lotId));
+    $('#lotPickSave').addEventListener('click', () => {
+      const chosen = new Set($$('#lotPick input:checked').map((i) => i.value));
+      for (const it of state.items) {
+        if (chosen.has(it.uid)) it.lotId = lotId;
+        else if (it.lotId === lotId) delete it.lotId;
+      }
+      recordSnapshot();
+      renderPortfolio();
+      toast(`${chosen.size} card${chosen.size === 1 ? '' : 's'} in “${lot.name}”`);
+      openLot(lotId);
+    });
   }
 
   /* ================= Card images (with fallback sources) ================= */
@@ -633,7 +821,9 @@
     renderChart();
     renderList();
     $('#emptyState').hidden = state.items.length > 0;
-    $('.list-head').hidden = state.items.length === 0;
+    $('.list-head').hidden = state.items.length === 0 && !lots().length;
+    $('#collTabs').hidden = state.items.length === 0 && !lots().length;
+    renderLots();
   }
 
   function seriesFor(range) {
@@ -806,7 +996,7 @@
   function renderList() {
     const filter = $('#filterInput').value.trim().toLowerCase();
     const sort = $('#sortSelect').value;
-    const items = state.items.filter((it) => !filter || `${it.card.name} ${it.card.set?.name} ${it.card.number}`.toLowerCase().includes(filter));
+    const items = state.items.filter((it) => !filter || `${it.card.name} ${it.card.set?.name} ${it.card.number} ${lotById(it.lotId)?.name || ''}`.toLowerCase().includes(filter));
     const cmp = {
       value: (a, b) => itemValue(b) - itemValue(a),
       recent: (a, b) => b.addedAt - a.addedAt,
@@ -830,7 +1020,8 @@
       const before = rowPrices.get(it.uid);
       const flash = before != null && price != null && Math.abs(before - price) >= 0.005 && !reduceMotion() ? (price > before ? 'flash-up' : 'flash-down') : '';
       rowPrices.set(it.uid, price);
-      const gainHtml = it.purchasePrice && price != null ? `<div class="g num ${gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat'}">${signed(gain)}</div>` : '';
+      const gainHtml = hasCost(it) && price != null ? `<div class="g num ${gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat'}">${signed(gain)}</div>` : '';
+      const lot = lotById(it.lotId);
       return `<button class="card-row" data-uid="${esc(it.uid)}">
         <img ${imgAttrs(c)} alt="" loading="lazy">
         <div class="meta">
@@ -838,6 +1029,7 @@
           <div class="sub">${esc(c.set?.name)} · #${esc(c.number)}${c.set?.printedTotal ? '/' + esc(c.set.printedTotal) : ''}</div>
           <div class="chips">
             ${it.qty > 1 ? `<span class="chip qty">×${it.qty}</span>` : ''}
+            ${lot ? `<span class="chip lot" title="From your purchase: ${esc(lot.name)}">📦 ${esc(lot.name)}</span>` : ''}
             ${c.lang === 'ja' ? '<span class="chip jp">Japanese</span>' : ''}
             ${it.variant ? `<span class="chip">${esc(VARIANT_LABELS[it.variant] || it.variant)}</span>` : ''}
             ${c.rarity ? `<span class="chip">${esc(c.rarity)}</span>` : ''}
@@ -2046,9 +2238,17 @@
             <select id="condSelect">${CONDITIONS.map((x) => `<option ${x === (isOwned ? item.condition : CONDITIONS[0]) ? 'selected' : ''}>${x}</option>`).join('')}</select>
           </div>
         </div>
-        <div class="field" style="margin-top:10px"><label for="paidInput">Price paid (each, USD)</label>
+        <div class="field" style="margin-top:10px"><label for="boughtAs">Bought as</label>
+          <select id="boughtAs">
+            <option value="">A single card</option>
+            ${lots().map((l) => `<option value="${esc(l.id)}" ${isOwned && item.lotId === l.id ? 'selected' : ''}>📦 ${esc(l.name)} (${esc(l.type || 'purchase')}, ${money(l.price || 0)})</option>`).join('')}
+            <option value="__new">+ New purchase (ETB, box, pack…)</option>
+          </select>
+        </div>
+        <div class="field" id="paidField" style="margin-top:10px"><label for="paidInput">Price paid (each, USD)</label>
           <input id="paidInput" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${startPaid.toFixed(2)}">
         </div>
+        <p class="note" id="lotCostNote" hidden></p>
         <div class="actions">
           ${isOwned
             ? '<button class="btn primary glow block" id="saveBtn">Save changes</button><button class="btn danger block" id="removeBtn">Remove from portfolio</button>'
@@ -2106,17 +2306,37 @@
     }));
     $('#qtyInput').addEventListener('input', renderPriceHero);
 
+    // "Bought as": a single card (price paid) or one of the user's purchases (cost shared from it).
+    const paintBoughtAs = () => {
+      const lot = lotById($('#boughtAs').value);
+      $('#paidField').hidden = !!lot;
+      $('#lotCostNote').hidden = !lot;
+      if (lot) $('#lotCostNote').textContent = `Cost comes from “${lot.name}” (${money(lot.price || 0)}), shared across its cards by value.`;
+    };
+    $('#boughtAs').addEventListener('change', (e) => {
+      if (e.target.value !== '__new') return paintBoughtAs();
+      openLot(null, {
+        afterSave: (saved) => {
+          openCard({ card: c, item });
+          $('#boughtAs').value = saved.id;
+          $('#boughtAs').dispatchEvent(new Event('change'));
+        },
+      });
+    });
+    paintBoughtAs();
     const readForm = () => ({
       qty: Math.max(1, parseInt($('#qtyInput').value, 10) || 1),
       condition: $('#condSelect').value,
       purchasePrice: Math.max(0, +$('#paidInput').value || 0),
       variant: sheetCtx.variant,
+      lotId: lotById($('#boughtAs').value)?.id || null,
     });
     const currentRaw = () => sheetCtx.raw || knownRaw(c, sheetCtx.variant);
     $('#addBtn')?.addEventListener('click', () => {
       const f = readForm();
       const r = currentRaw();
-      state.items.push({ uid: uid(), cardId: c.id, card: c, addedAt: Date.now(), rawPrice: r?.price ?? null, priceSource: r?.source || null, ...f });
+      const { lotId, ...rest } = f;
+      state.items.push({ uid: uid(), cardId: c.id, card: c, addedAt: Date.now(), rawPrice: r?.price ?? null, priceSource: r?.source || null, ...rest, ...(lotId ? { lotId } : {}) });
       if (!state.pricesUpdatedAt) state.pricesUpdatedAt = Date.now();
       recordSnapshot();
       closeSheet();
@@ -2125,7 +2345,9 @@
     $('#saveBtn')?.addEventListener('click', () => {
       const f = readForm();
       if (f.variant !== item.variant) { const r = currentRaw(); item.rawPrice = r?.price ?? null; item.priceSource = r?.source || null; }
-      Object.assign(item, f);
+      const { lotId, ...rest } = f;
+      Object.assign(item, rest);
+      if (lotId) item.lotId = lotId; else delete item.lotId;
       recordSnapshot();
       closeSheet();
       renderPortfolio();
