@@ -1513,3 +1513,4 @@ select::-ms-expand { display: none; }
 .lot-filter { width: 100%; background: rgba(0,0,0,.3); border: 1px solid var(--edge); border-radius: 12px; padding: 10px 13px; font-size: 14px; color: var(--text); }
 .icon-btn.sm { width: 30px; height: 30px; border-radius: 9px; font-size: 16px; flex: none; }
 @media (min-width: 1024px) { .sheet:has(.lot-form) { max-width: 640px; } }
+.card-row .price .chg.flat { color: var(--text-3); }

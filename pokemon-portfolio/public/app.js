@@ -486,8 +486,9 @@
   }
   const RANGE_WORDS = { 7: 'this week', 30: 'this month', 90: 'in 3 months', 365: 'this year', 0: 'since added' };
   function changeHtml(it) {
+    if (itemPrice(it) == null) return '';
     const ch = cardChange(it);
-    if (!ch) return '';
+    if (!ch) return `<div class="chg num flat" title="No price change ${RANGE_WORDS[chartRange] || ''}">– ${money(0)}</div>`;
     const up = ch.diff > 0;
     const total = ch.diff * it.qty;
     return `<div class="chg num ${up ? 'up' : 'down'}" title="${up ? 'Up' : 'Down'} ${money(Math.abs(total))}${ch.pct != null ? ` (${(Math.abs(ch.pct) * 100).toFixed(1)}%)` : ''} ${RANGE_WORDS[chartRange] || ''} — since ${new Date(ch.since * 864e5).toLocaleDateString()}">
@@ -1020,12 +1021,11 @@
     if (sort === 'psa') loadPsa(state.items);
     items.sort(cmp);
     $('#cardList').innerHTML = items.map((it) => {
-      const c = it.card, price = itemPrice(it), gain = itemValue(it) - itemCost(it);
+      const c = it.card, price = itemPrice(it);
       // A price that changed since the last render flashes green/red.
       const before = rowPrices.get(it.uid);
       const flash = before != null && price != null && Math.abs(before - price) >= 0.005 && !reduceMotion() ? (price > before ? 'flash-up' : 'flash-down') : '';
       rowPrices.set(it.uid, price);
-      const gainHtml = hasCost(it) && price != null ? `<div class="g num ${gain > 0 ? 'up' : gain < 0 ? 'down' : 'flat'}">${signed(gain)}</div>` : '';
       const lot = lotById(it.lotId);
       return `<button class="card-row" data-uid="${esc(it.uid)}">
         <img ${imgAttrs(c)} alt="" loading="lazy">
@@ -1045,7 +1045,6 @@
           <div class="v num ${flash}">${price == null ? '<span class="muted">No price</span>' : `${APPROX_SOURCES.has(it.priceSource) ? '<span class="approx" title="Converted EU price or lowest listing">≈</span>' : ''}${money(price * it.qty)}`}</div>
           ${changeHtml(it)}
           ${it.qty > 1 && price != null ? `<div class="muted num">${money(price)} ea</div>` : ''}
-          ${gainHtml}
         </div>
       </button>`;
     }).join('') || (state.items.length ? '<p class="muted" style="text-align:center;padding:16px">No cards match that filter.</p>' : '');
@@ -2254,6 +2253,7 @@
           <input id="paidInput" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${startPaid.toFixed(2)}">
         </div>
         <p class="note" id="lotCostNote" hidden></p>
+        ${isOwned && hasCost(item) && itemPrice(item) != null ? (() => { const g = itemValue(item) - itemCost(item); return `<p class="note own-pl">Your P/L on this card: <b class="num ${g > 0 ? 'up' : g < 0 ? 'down' : ''}">${signed(g)}</b> · value ${money(itemValue(item))} vs. cost ${money(itemCost(item))}</p>`; })() : ''}
         <div class="actions">
           ${isOwned
             ? '<button class="btn primary glow block" id="saveBtn">Save changes</button><button class="btn danger block" id="removeBtn">Remove from portfolio</button>'

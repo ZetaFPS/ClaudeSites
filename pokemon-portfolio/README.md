@@ -152,7 +152,9 @@ A Collectr-style app for tracking what your Pokémon TCG collection is worth.
   how much that card (times its quantity) went up or down over the range picked on the chart
   (1W, 1M, 3M, 1Y, or ALL = since it was added); hover for the % and start date. Each card's price
   is recorded whenever prices refresh (a point only when it changes, ≤160 per card) and syncs with
-  your account, so the change appears once a card's price has moved since it was first recorded.
+  your account; until a card's price has moved it shows a grey `– $0.00`. This is the card's price
+  movement, not its P/L — a card's P/L (value vs. what you paid or its share of a purchase) is shown
+  on the card's own page.
 - **Purchases (packs, ETBs, boxes, bundles)** — besides a per-card "paid" price, record what you
   bought sealed: give it a name (`Base Set ETB`), a type (booster pack, booster box, Elite Trainer
   Box, booster bundle, collection box, tin, blister, bulk lot, other), the price paid, a date and a
