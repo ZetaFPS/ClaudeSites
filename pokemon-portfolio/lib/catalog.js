@@ -5,12 +5,16 @@
 //
 // Lists are fetched on first use, saved to the store so restarts don't refetch them, and
 // refreshed once a day for new sets. Index queries are answered from memory, a page at a time.
+// The English list also includes recent sets that only TCGdex has so far (brand-new sets reach the
+// Pokémon TCG API later), e.g. 30th Celebration with its letter-numbered R/G/B Mews.
 
 const POKEMONTCG = 'https://api.pokemontcg.io/v2';
 const TCGDEX = 'https://api.tcgdex.net/v2';
 const UA = 'Mozilla/5.0 (compatible; PokeFolio/2.4)';
 const DAY = 24 * 3600e3;
 const LANGS = ['en', 'ja'];
+const CATALOG_VERSION = 2; // bump to rebuild saved lists after a change in what they contain
+const RECENT_SETS_MS = 548 * 24 * 3600e3; // ~18 months
 
 async function fetchWithTimeout(url, ms = 15000, accept = '*/*') {
   const ctrl = new AbortController();
@@ -86,6 +90,33 @@ async function tcgdexCatalog(lang, onProgress) {
   return out;
 }
 
+// Recent TCGdex sets the Pokémon TCG API doesn't have yet, as catalogue rows (English).
+const setKey = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '');
+async function tcgdexOnlySets(have) {
+  const known = new Set(have.map((c) => setKey(c.setName)));
+  // Same set under a slightly different name: same release date and card count.
+  const knownDates = new Set(have.map((c) => `${c.released}|${c.total}`));
+  const sets = await getJson(`${TCGDEX}/en/sets`, 30000);
+  const candidates = (Array.isArray(sets) ? sets : []).filter((s) => !known.has(setKey(s.name)));
+  const since = new Date(Date.now() - RECENT_SETS_MS).toISOString().slice(0, 10);
+  const out = [];
+  // Newest sets are listed last; a few dozen unknown names at most need their details checked.
+  await mapLimit(candidates.slice(-60), 4, async (s) => {
+    const set = await retry(() => getJson(`${TCGDEX}/en/sets/${encodeURIComponent(s.id)}`, 20000), 2).catch(() => null);
+    if (!set?.cards?.length || String(set.releaseDate || '') < since) return;
+    if (knownDates.has(`${set.releaseDate}|${set.cardCount?.official}`)) return;
+    for (const c of set.cards) {
+      out.push({
+        id: `tcgdex:${c.id}`, lang: 'en', name: c.name, number: c.localId, rarity: c.rarity || null, supertype: null,
+        setId: set.id, setName: set.name, series: set.serie?.name || null, total: set.cardCount?.official,
+        released: set.releaseDate || '', code: set.abbreviation?.official || null,
+        img: c.image ? `${c.image}/low.webp` : null, alt: c.image ? `${c.image}/low.png` : null,
+      });
+    }
+  });
+  return out;
+}
+
 /* ---------------- sorting ---------------- */
 // Rarity, most sought-after first. The first entry contained in a card's rarity wins, so more
 // specific names come before the general ones ("rare holo vmax" before "rare holo" before "rare").
@@ -141,7 +172,11 @@ function createCatalog({ store, log = console } = {}) {
     const onProgress = (done, total) => { progress[lang] = { done, total }; };
     if (lang === 'ja') return tcgdexCatalog('ja', onProgress);
     try {
-      return await englishCatalog(onProgress);
+      const cards = await englishCatalog(onProgress);
+      // Add recent sets only TCGdex has (newest first, like the rest).
+      const extra = await tcgdexOnlySets(cards).catch((e) => { log.warn?.(`catalogue: TCGdex-only sets skipped: ${e.message}`); return []; });
+      if (extra.length) log.log?.(`  catalogue: +${extra.length} cards from sets only TCGdex has yet`);
+      return [...extra, ...cards].sort((a, b) => String(b.released || '').localeCompare(String(a.released || '')));
     } catch (e) {
       log.warn?.(`catalogue: Pokémon TCG API unavailable (${e.message}) — using TCGdex`);
       return tcgdexCatalog('en', onProgress);
@@ -153,7 +188,7 @@ function createCatalog({ store, log = console } = {}) {
       try {
         const cards = await fetchList(lang);
         if (!cards.length) throw new Error('empty catalogue');
-        lists[lang] = { at: Date.now(), cards };
+        lists[lang] = { at: Date.now(), cards, v: CATALOG_VERSION };
         version++;
         await store.setKv?.(`catalog-${lang}`, lists[lang]).catch((e) => log.warn?.(`catalogue: couldn't save ${lang}: ${e.message}`));
         return cards;
@@ -172,7 +207,7 @@ function createCatalog({ store, log = console } = {}) {
       if (saved?.cards?.length && !lists[lang]) { lists[lang] = saved; version++; }
     }
     if (lists[lang]) {
-      if (Date.now() - lists[lang].at > DAY) refresh(lang).catch(() => {});
+      if (Date.now() - lists[lang].at > DAY || lists[lang].v !== CATALOG_VERSION) refresh(lang).catch(() => {});
       return lists[lang].cards;
     }
     return refresh(lang);
